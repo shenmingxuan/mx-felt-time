@@ -4,24 +4,1274 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Felt Time</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans+Mono:ital,wght@0,400..700;1,400..700&display=swap" rel="stylesheet">
   <style>
-    html, body {
+    * {
+      box-sizing: border-box;
       margin: 0;
       padding: 0;
+    }
+
+    :root {
+      --bg-color: rgba(245, 169, 227, 1);
+      --clock-fill: rgba(214, 252, 252, 1);
+      --ink-color: rgba(0, 0, 0, 1);
+      --second-hand-color: #f22c3d;
+      --font-mono: 'Google Sans Mono', monospace;
+    }
+
+    html, body {
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #f5a9e3;
+      background-color: var(--bg-color);
+      font-family: var(--font-mono);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      -webkit-font-smoothing: antialiased;
     }
-    iframe {
+
+    /* Outer Stage / Canvas Wrapper */
+    #stage {
+      position: relative;
       width: 100vw;
       height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-color: var(--bg-color);
+    }
+
+    /* Clock container maintaining exact 828x828 ratio */
+    #clock-wrapper {
+      position: relative;
+      width: 828px;
+      height: 828px;
+      max-width: 88vmin;
+      max-height: 88vmin;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: visible;
+    }
+
+    /* SVG Canvas for angular polygon, hands, and text markers with soft Riso edge bleed */
+    #clock-svg {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+      filter: url(#riso-edge-filter);
+    }
+
+    /* Angular clock face polygon */
+    #clock-shape {
+      fill: var(--clock-fill);
+      stroke: transparent;
+      transition: fill 0.3s ease;
+    }
+
+    /* Dial Markers: Pure, crisp black text with ZERO glow or shadow, always inside face */
+    .clock-text-marker {
+      font-family: var(--font-mono);
+      font-size: 28px;
+      font-weight: 500;
+      fill: var(--ink-color);
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+      user-select: none;
+      will-change: transform, opacity;
+      transition: opacity 0.2s ease;
+    }
+
+    .arrow-hand {
+      fill: var(--ink-color);
+      stroke: var(--ink-color);
+      stroke-width: 1.6;
+      stroke-linejoin: round;
+      stroke-linecap: round;
+      will-change: transform;
+    }
+
+    /* Long Red Second Hand with rounded ends */
+    #second-line {
+      stroke: var(--second-hand-color);
+      stroke-width: 2.2;
+      stroke-linecap: round;
+      will-change: transform;
+    }
+
+    /* Clean, minimal interactive floating panel */
+    #ui-panel {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      padding: 10px 18px;
+      border-radius: 40px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 10px 35px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.04);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: #000;
+      z-index: 100;
+      transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    #ui-panel.collapsed {
+      transform: translateX(-50%) translateY(140%);
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    button, input {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 500;
+      padding: 8px 18px;
+      border-radius: 999px;
       border: none;
-      display: block;
+      background: #ffffff;
+      color: #000;
+      cursor: pointer;
+      outline: none;
+      transition: all 0.15s ease;
+    }
+
+    input[type="time"] {
+      padding: 8px 16px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 500;
+      width: 156px;
+      background: #ffffff;
+      border: none;
+      outline: none;
+      box-shadow: none;
+    }
+
+    input[type="time"]:hover,
+    input[type="time"]:focus {
+      background: #ffffff;
+      border: none;
+      outline: none;
+    }
+
+    input[type="time"]::-webkit-calendar-picker-indicator {
+      cursor: pointer;
+      margin-left: 6px;
+    }
+
+    button:hover {
+      background: #f4f4f4;
+    }
+
+    button.active {
+      background: #000;
+      color: #fff;
+    }
+
+    .btn-collapse {
+      background: var(--clock-fill);
+      border: none;
+      color: #000;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 500;
+      padding: 8px 22px;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .btn-collapse:hover {
+      background: #c2f7f7;
+    }
+
+    /* Live digital timestamp */
+    #digital-corner {
+      position: fixed;
+      bottom: 24px;
+      left: 24px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 500;
+      color: rgba(0, 0, 0, 0.65);
+      background: rgba(255, 255, 255, 0.65);
+      padding: 6px 14px;
+      border-radius: 20px;
+      letter-spacing: 0.5px;
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+
+    /* Mode indicator badge */
+    #figma-badge {
+      position: fixed;
+      top: 24px;
+      left: 24px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.8px;
+      color: rgba(0, 0, 0, 0.5);
+      pointer-events: none;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+
+    #digital-corner.collapsed,
+    #figma-badge.collapsed {
+      opacity: 0;
+      pointer-events: none;
     }
   </style>
 </head>
 <body>
-  <iframe src="https://editor.p5js.org/shenmingxuan1/full/3V_7DTaJA" allow="autoplay"></iframe>
+
+  <div id="stage">
+    <div id="figma-badge">Felt Time · Press 'H' to toggle controls</div>
+
+    <div id="clock-wrapper">
+      <!-- SVG Canvas with strict dynamic clipPath: Elements NEVER escape the blue clock face -->
+      <svg id="clock-svg" viewBox="-40 -40 908 908">
+        <defs>
+          <clipPath id="clock-face-clip">
+            <polygon id="clip-poly" points="" />
+          </clipPath>
+          <filter id="riso-edge-filter" x="-8%" y="-8%" width="116%" height="116%" color-interpolation-filters="sRGB">
+            <!-- Fine Riso paper-fiber displacement to roughen sharp vector edges -->
+            <feTurbulence id="riso-edge-noise" type="fractalNoise" baseFrequency="0.72" numOctaves="3" seed="1" result="noise" />
+            <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.95" xChannelSelector="R" yChannelSelector="G" result="roughened" />
+            <!-- Ever-so-slightly blurry Risograph ink bleed (25% less blurry) -->
+            <feGaussianBlur in="roughened" stdDeviation="0.51" />
+          </filter>
+        </defs>
+
+        <!-- 0. Riso Misregistered Underprint Drums -->
+        <polygon id="riso-face-yellow" points="" fill="rgba(255, 238, 175, 0.42)" />
+        <polygon id="riso-face-aqua" points="" fill="rgba(140, 235, 245, 0.36)" />
+
+        <!-- 1. The Blue Clock Face Polygon -->
+        <polygon id="clock-shape" points="" />
+
+        <!-- 2. Enclosed Group clipped strictly to the clock face polygon boundary -->
+        <g id="enclosed-content" clip-path="url(#clock-face-clip)">
+          <!-- Hands Group -->
+          <g id="hands-group">
+            <!-- Riso Second Hand Echo -->
+            <line id="second-echo" x1="414" y1="414" x2="414" y2="828" stroke="rgba(255,190,40,0.28)" stroke-width="2.0" stroke-linecap="round" />
+
+            <!-- Long Red Second Hand -->
+            <line id="second-line" x1="414" y1="414" x2="414" y2="828" />
+
+            <!-- Hour Hand: Riso Red/Blue Ghosts + Main Arrow (rounded ends) -->
+            <g id="hour-Ghost-red" transform="translate(414, 414)">
+              <path d="M 0 -155 L 14 -129 L 3 -134 L 3 0 A 3 3 0 0 1 -3 0 L -3 -134 L -14 -129 Z" fill="rgba(242, 44, 61, 0.24)" />
+            </g>
+            <g id="hour-Ghost-blue" transform="translate(414, 414)">
+              <path d="M 0 -155 L 14 -129 L 3 -134 L 3 0 A 3 3 0 0 1 -3 0 L -3 -134 L -14 -129 Z" fill="rgba(0, 130, 195, 0.20)" />
+            </g>
+            <g id="hour-group" transform="translate(414, 414)">
+              <path id="hour-arrow" class="arrow-hand" d="M 0 -155 L 14 -129 L 3 -134 L 3 0 A 3 3 0 0 1 -3 0 L -3 -134 L -14 -129 Z" />
+            </g>
+
+            <!-- Minute Hand: Riso Red/Blue Ghosts + Main Arrow (rounded ends) -->
+            <g id="minute-Ghost-red" transform="translate(414, 414)">
+              <path d="M 0 -225 L 14 -199 L 3 -204 L 3 0 A 3 3 0 0 1 -3 0 L -3 -204 L -14 -199 Z" fill="rgba(242, 44, 61, 0.24)" />
+            </g>
+            <g id="minute-Ghost-blue" transform="translate(414, 414)">
+              <path d="M 0 -225 L 14 -199 L 3 -204 L 3 0 A 3 3 0 0 1 -3 0 L -3 -204 L -14 -199 Z" fill="rgba(0, 130, 195, 0.20)" />
+            </g>
+            <g id="minute-group" transform="translate(414, 414)">
+              <path id="minute-arrow" class="arrow-hand" d="M 0 -225 L 14 -199 L 3 -204 L 3 0 A 3 3 0 0 1 -3 0 L -3 -204 L -14 -199 Z" />
+            </g>
+          </g>
+
+          <!-- 12 Dial Text Markers (with Riso registration layers) -->
+          <g id="text-markers-red-group"></g>
+          <g id="text-markers-blue-group"></g>
+          <g id="text-markers-group"></g>
+        </g>
+      </svg>
+    </div>
+
+    <!-- Fullscreen Tactile Risograph Grain Canvas Overlay -->
+    <canvas id="riso-grain-overlay" style="position:fixed; top:0; left:0; width:100vw; height:100vh; pointer-events:none; z-index:50;"></canvas>
+  </div>
+
+  <div id="digital-corner">00:00:00 AM</div>
+
+  <!-- Clean, Minimal Controls Bar -->
+  <div id="ui-panel">
+    <div class="control-group">
+      <input type="time" id="manual-time-input" step="1" title="Type any time to showcase" />
+      <button id="btn-live-toggle" class="active">● Live</button>
+    </div>
+
+    <button class="btn-collapse" id="btn-trigger-collapse">Collapse Now</button>
+  </div>
+
+  <script>
+    // --- Clock Geometry & State ---
+    const CENTER = { x: 414, y: 414 };
+    const BASE_RADIUS = 350;
+    const MARKER_RADIUS = 295;
+    const TWO_PI = Math.PI * 2;
+
+    // Circadian lexicons for AM and PM based on your routine
+    const CIRCADIAN_AM = [
+      'ZZZ',    // 12 AM
+      'ZZZ',    // 1 AM
+      'ZZZ',    // 2 AM
+      'ZZZ',    // 3 AM
+      'ZZZ',    // 4 AM
+      'ZZZ',    // 5 AM
+      'HFAWK',  // 6 AM (Half-awake)
+      'WKUP',   // 7 AM (Wake up)
+      'BRKFST', // 8 AM (Breakfast)
+      'CMT',    // 9 AM (Commute)
+      'WRK',    // 10 AM (Work)
+      'WRK'     // 11 AM (Work)
+    ];
+
+    const CIRCADIAN_PM = [
+      'LNCH',   // 12 PM (Lunch)
+      'FDCM',   // 1 PM (Food coma)
+      'DRWSY',  // 2 PM (Drowsy)
+      'WRK',    // 3 PM (Work)
+      'WRKZZ',  // 4 PM (Work-zzz)
+      'TRD',    // 5 PM (Tired)
+      'CMT',    // 6 PM (Commute)
+      'DNR',    // 7 PM (Dinner)
+      'TV',     // 8 PM (TV)
+      'SHWR',   // 9 PM (Shower)
+      'RDG',    // 10 PM (Reading)
+      'ZZZ'     // 11 PM (Sleep)
+    ];
+
+    // Collapsed Face Polygon Vertices matching user image (media_1792782657268.png)
+    const COLLAPSED_FACE_VERTICES = [
+      { x: 250, y: 440 }, // 12h -> top peak
+      { x: 390, y: 560 }, // 1h -> middle dip
+      { x: 510, y: 550 }, // 2h -> middle ridge
+      { x: 600, y: 580 }, // 3h -> right shoulder
+      { x: 640, y: 740 }, // 4h -> right slope
+      { x: 730, y: 805 }, // 5h -> far right tail
+      { x: 530, y: 805 }, // 6h -> floor right
+      { x: 414, y: 800 }, // 7h -> floor center
+      { x: 300, y: 805 }, // 8h -> floor left
+      { x: 180, y: 795 }, // 9h -> floor far left
+      { x: 110, y: 760 }, // 10h -> left tail
+      { x: 150, y: 580 }  // 11h -> left rising slope
+    ];
+
+    // Landing positions of words strictly WITHIN the collapsed puddle
+    const COLLAPSED_WORD_POSITIONS = [
+      { x: 265, y: 530, rot: -14 }, // 12 (under top peak)
+      { x: 350, y: 620, rot: -18 }, // 1 (ZZZ)
+      { x: 430, y: 650, rot: 12 },  // 2
+      { x: 480, y: 690, rot: 8 },   // 3 (WRK)
+      { x: 540, y: 720, rot: -4 },  // 4 (WKUP)
+      { x: 590, y: 750, rot: 10 },  // 5
+      { x: 380, y: 765, rot: 8 },   // 6 (ZZZ bottom)
+      { x: 280, y: 750, rot: -12 }, // 7
+      { x: 200, y: 725, rot: 22 },  // 8 (CMT)
+      { x: 210, y: 650, rot: 14 },  // 9
+      { x: 290, y: 680, rot: -8 },  // 10
+      { x: 360, y: 710, rot: 15 }   // 11
+    ];
+
+    // Animation Phase Timing (ms) — tuned for 4 FPS (250ms per stop-motion frame)
+    const FRAME_INTERVAL_MS = 250; // 4 frames per second
+    const DROP_PHASE_DUR = 1250;   // 5 stop-motion frames
+    const HOLD_PHASE_DUR = 500;    // 2 stop-motion frames
+    const REBUILD_PHASE_DUR = 1250;// 5 stop-motion frames
+
+    // State Variables
+    let isLiveTime = true;
+    let manualTime = new Date();
+    let manualTimeAnchor = Date.now();
+    let currentPhase = 'AM';
+    let deformIntensity = 50;
+
+    let animState = 'IDLE'; // 'IDLE', 'DROPPING', 'HOLD_PILE', 'REBUILDING'
+    let animStartTime = 0;
+    let forceRenderFrame = true;
+
+    // DOM Elements
+    const clockShape = document.getElementById('clock-shape');
+    const risoFaceYellow = document.getElementById('riso-face-yellow');
+    const risoFaceAqua = document.getElementById('riso-face-aqua');
+    const clipPoly = document.getElementById('clip-poly');
+    const textMarkersGroup = document.getElementById('text-markers-group');
+    const textMarkersRedGroup = document.getElementById('text-markers-red-group');
+    const textMarkersBlueGroup = document.getElementById('text-markers-blue-group');
+    const hourGroup = document.getElementById('hour-group');
+    const hourGhostRed = document.getElementById('hour-Ghost-red');
+    const hourGhostBlue = document.getElementById('hour-Ghost-blue');
+    const minuteGroup = document.getElementById('minute-group');
+    const minuteGhostRed = document.getElementById('minute-Ghost-red');
+    const minuteGhostBlue = document.getElementById('minute-Ghost-blue');
+    const secondLine = document.getElementById('second-line');
+    const secondEcho = document.getElementById('second-echo');
+    const digitalCorner = document.getElementById('digital-corner');
+    const figmaBadge = document.getElementById('figma-badge');
+    const manualTimeInput = document.getElementById('manual-time-input');
+    const btnLiveToggle = document.getElementById('btn-live-toggle');
+    const btnTriggerCollapse = document.getElementById('btn-trigger-collapse');
+    const grainOverlay = document.getElementById('riso-grain-overlay');
+    const grainCtx = grainOverlay.getContext('2d');
+
+    // Create 12 SVG Text Marker elements + Riso Red/Blue misregistration plates
+    const markerElements = [];
+    const markerRedElements = [];
+    const markerBlueElements = [];
+    for (let i = 0; i < 12; i++) {
+      const textEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      textEl.setAttribute('class', 'clock-text-marker');
+      textMarkersGroup.appendChild(textEl);
+      markerElements.push(textEl);
+
+      const redEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      redEl.setAttribute('class', 'clock-text-marker');
+      redEl.style.fill = 'rgba(242, 44, 61, 0.24)';
+      textMarkersRedGroup.appendChild(redEl);
+      markerRedElements.push(redEl);
+
+      const blueEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      blueEl.setAttribute('class', 'clock-text-marker');
+      blueEl.style.fill = 'rgba(0, 130, 195, 0.20)';
+      textMarkersBlueGroup.appendChild(blueEl);
+      markerBlueElements.push(blueEl);
+    }
+
+    // Generate offscreen Risograph grain tile in PINK and BLUE Riso ink colors (zero gray!)
+    const risoTile = document.createElement('canvas');
+    risoTile.width = 256;
+    risoTile.height = 256;
+    const tileCtx = risoTile.getContext('2d');
+    const imgData = tileCtx.createImageData(256, 256);
+    for (let i = 0; i < imgData.data.length; i += 4) {
+      const r = Math.random();
+      if (r < 0.14) {
+        // Riso Fluorescent Pink / Magenta ink grain (#e45ab5)
+        imgData.data[i] = 228;
+        imgData.data[i + 1] = 90;
+        imgData.data[i + 2] = 181;
+        imgData.data[i + 3] = Math.floor(Math.pow(Math.random(), 1.4) * 72 + 18);
+      } else if (r < 0.26) {
+        // Light Bubblegum Pink ink grain (#ffaee8)
+        imgData.data[i] = 255;
+        imgData.data[i + 1] = 174;
+        imgData.data[i + 2] = 232;
+        imgData.data[i + 3] = Math.floor(Math.pow(Math.random(), 1.4) * 82 + 20);
+      } else if (r < 0.40) {
+        // Riso Aqua / Cyan-Blue ink grain (#3bbbe0)
+        imgData.data[i] = 59;
+        imgData.data[i + 1] = 187;
+        imgData.data[i + 2] = 224;
+        imgData.data[i + 3] = Math.floor(Math.pow(Math.random(), 1.4) * 69 + 18);
+      } else if (r < 0.52) {
+        // Pastel Ice Blue / Cyan ink grain (#c8fafa)
+        imgData.data[i] = 200;
+        imgData.data[i + 1] = 250;
+        imgData.data[i + 2] = 250;
+        imgData.data[i + 3] = Math.floor(Math.pow(Math.random(), 1.4) * 85 + 20);
+      } else {
+        imgData.data[i + 3] = 0;
+      }
+    }
+    tileCtx.putImageData(imgData, 0, 0);
+
+    let risoState = {
+      seedX: 0,
+      seedY: 0,
+      regRedX: 1.4,
+      regRedY: -1.1,
+      regBlueX: -1.3,
+      regBlueY: 1.0,
+      regFaceX: 2.8,
+      regFaceY: 2.2,
+      whiteSpots: []
+    };
+
+    function resizeGrainOverlay() {
+      grainOverlay.width = window.innerWidth;
+      grainOverlay.height = window.innerHeight;
+      renderGrainOnce();
+    }
+    window.addEventListener('resize', resizeGrainOverlay);
+
+    function renderGrainOnce() {
+      if (!grainOverlay.width || !grainOverlay.height) return;
+      const w = grainOverlay.width;
+      const h = grainOverlay.height;
+      grainCtx.clearRect(0, 0, w, h);
+
+      // 1. Pink & Blue Riso ink grain pattern (+25% more obvious)
+      const pat = grainCtx.createPattern(risoTile, 'repeat');
+      if (pat) {
+        grainCtx.save();
+        grainCtx.globalAlpha = 0.45;
+        grainCtx.translate(risoState.seedX, risoState.seedY);
+        grainCtx.fillStyle = pat;
+        grainCtx.fillRect(-risoState.seedX, -risoState.seedY, w, h);
+        grainCtx.restore();
+      }
+
+      // 2. Micro natural white spots missed in printing process (2x count, updated each 4fps frame)
+      grainCtx.save();
+      for (let i = 0; i < risoState.whiteSpots.length; i++) {
+        const sp = risoState.whiteSpots[i];
+        const sx = sp.nx * w;
+        const sy = sp.ny * h;
+        grainCtx.fillStyle = `rgba(255, 253, 250, ${sp.alpha.toFixed(2)})`;
+        grainCtx.beginPath();
+        grainCtx.ellipse(sx, sy, sp.rx, sp.ry, sp.rot, 0, TWO_PI);
+        grainCtx.fill();
+
+        if (sp.hasSatellite) {
+          grainCtx.beginPath();
+          grainCtx.arc(sx + sp.satDx, sy + sp.satDy, sp.rx * 0.55, 0, TWO_PI);
+          grainCtx.fill();
+        }
+      }
+      grainCtx.restore();
+    }
+
+    // Shifts Pink/Blue Riso grain, tiny white print voids & registration at 4 FPS (every 250ms)
+    const risoEdgeNoise = document.getElementById('riso-edge-noise');
+    function triggerRisoTick() {
+      risoState.seedX = Math.floor(Math.random() * 256);
+      risoState.seedY = Math.floor(Math.random() * 256);
+      if (risoEdgeNoise) {
+        risoEdgeNoise.setAttribute('seed', String(Math.floor(Math.random() * 999)));
+      }
+      const a1 = Math.random() * TWO_PI;
+      const a2 = a1 + 2.1 + (Math.random() - 0.5) * 0.8;
+      risoState.regRedX = Math.cos(a1) * 1.5;
+      risoState.regRedY = Math.sin(a1) * 1.5;
+      risoState.regBlueX = Math.cos(a2) * 1.4;
+      risoState.regBlueY = Math.sin(a2) * 1.4;
+      const fa = Math.random() * TWO_PI;
+      risoState.regFaceX = Math.cos(fa) * 2.8;
+      risoState.regFaceY = Math.sin(fa) * 2.8;
+
+      // 2x increased count (~150-206) of tiny organic white ink voids
+      const count = 150 + Math.floor(Math.random() * 56);
+      risoState.whiteSpots = [];
+      for (let i = 0; i < count; i++) {
+        const rx = 0.3 + Math.pow(Math.random(), 2.2) * 0.8;
+        const ry = rx * (0.55 + Math.random() * 0.65);
+        risoState.whiteSpots.push({
+          nx: Math.random(),
+          ny: Math.random(),
+          rx: rx,
+          ry: ry,
+          rot: Math.random() * Math.PI,
+          alpha: 0.40 + Math.random() * 0.45,
+          hasSatellite: Math.random() < 0.35,
+          satDx: (Math.random() - 0.5) * 1.6,
+          satDy: (Math.random() - 0.5) * 1.6
+        });
+      }
+
+      renderGrainOnce();
+    }
+    resizeGrainOverlay();
+    triggerRisoTick();
+
+    function getDialLabels(phase) {
+      return phase === 'AM' ? CIRCADIAN_AM : CIRCADIAN_PM;
+    }
+
+    function updateMarkerLabels(phase) {
+      const labels = getDialLabels(phase);
+      markerElements.forEach((el, i) => {
+        el.textContent = labels[i];
+        el.style.fontSize = '28px';
+        markerRedElements[i].textContent = labels[i];
+        markerRedElements[i].style.fontSize = '28px';
+        markerBlueElements[i].textContent = labels[i];
+        markerBlueElements[i].style.fontSize = '28px';
+      });
+    }
+
+    // --- Procedural Web Audio Sound FX (Natural Mechanical Clock Tick-Tock & Crunchy Riso Collapse) ---
+    const SoundFX = (() => {
+      let ctx = null;
+      let muted = false;
+      let crunchBuffer = null;
+
+      function ensureCtx() {
+        if (muted) return null;
+        if (!ctx) {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (!AudioCtx) return null;
+          ctx = new AudioCtx();
+        }
+        if (ctx.state === 'suspended') {
+          ctx.resume().catch(() => {});
+        }
+        if (!crunchBuffer && ctx) {
+          // Pre-build a 1.5s stochastic paper-fiber crackle & crunch buffer
+          const sr = ctx.sampleRate;
+          crunchBuffer = ctx.createBuffer(1, Math.floor(sr * 1.5), sr);
+          const data = crunchBuffer.getChannelData(0);
+          let hold = 0;
+          for (let i = 0; i < data.length; i++) {
+            // Sparse sharp fiber-buckling spikes + dry paper friction grain
+            const r = Math.random();
+            if (r < 0.045) {
+              hold = (Math.random() * 2 - 1) * (0.65 + Math.random() * 0.35);
+            } else {
+              hold *= 0.82;
+            }
+            const fine = (Math.random() * 2 - 1) * 0.18;
+            data[i] = Math.max(-1, Math.min(1, hold + fine));
+          }
+        }
+        return ctx;
+      }
+
+      // Unlock audio on first user interaction
+      ['pointerdown', 'mousedown', 'keydown', 'touchstart'].forEach((evt) => {
+        window.addEventListener(evt, () => ensureCtx(), { passive: true });
+      });
+
+      function playClockTick(sec) {
+        const ac = ensureCtx();
+        if (!ac || ac.state !== 'running') return;
+
+        const now = ac.currentTime;
+        const isTock = (sec % 2 === 1);
+
+        // 1. Primary escapement pin impulse (crisp mechanical transient)
+        const clickDur = 0.024;
+        const clickBuf = ac.createBuffer(1, Math.floor(ac.sampleRate * clickDur), ac.sampleRate);
+        const cData = clickBuf.getChannelData(0);
+        for (let i = 0; i < cData.length; i++) {
+          const env = Math.pow(1 - i / cData.length, 3.2);
+          cData[i] = (Math.random() * 2 - 1) * env;
+        }
+        const clickSrc = ac.createBufferSource();
+        clickSrc.buffer = clickBuf;
+
+        const bp = ac.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(isTock ? 1720 : 2180, now);
+        bp.Q.setValueAtTime(4.0, now);
+
+        const clickGain = ac.createGain();
+        clickGain.gain.setValueAtTime(0.26, now);
+        clickGain.gain.exponentialRampToValueAtTime(0.001, now + clickDur);
+
+        clickSrc.connect(bp);
+        bp.connect(clickGain);
+        clickGain.connect(ac.destination);
+        clickSrc.start(now);
+
+        // 2. Warm wooden clock-case resonance body
+        const bodyOsc = ac.createOscillator();
+        bodyOsc.type = 'triangle';
+        bodyOsc.frequency.setValueAtTime(isTock ? 230 : 275, now);
+        bodyOsc.frequency.exponentialRampToValueAtTime(isTock ? 82 : 98, now + 0.026);
+
+        const bodyGain = ac.createGain();
+        bodyGain.gain.setValueAtTime(0.09, now);
+        bodyGain.gain.exponentialRampToValueAtTime(0.001, now + 0.028);
+
+        bodyOsc.connect(bodyGain);
+        bodyGain.connect(ac.destination);
+        bodyOsc.start(now);
+        bodyOsc.stop(now + 0.03);
+
+        // 3. Subtle pallet-fork lock micro-click (+38ms later for natural "k-tick" feel)
+        const subOffset = 0.038;
+        const subSrc = ac.createBufferSource();
+        subSrc.buffer = clickBuf;
+
+        const subBp = ac.createBiquadFilter();
+        subBp.type = 'bandpass';
+        subBp.frequency.setValueAtTime(isTock ? 2900 : 3400, now + subOffset);
+        subBp.Q.setValueAtTime(5.0, now + subOffset);
+
+        const subGain = ac.createGain();
+        subGain.gain.setValueAtTime(0.065, now + subOffset);
+        subGain.gain.exponentialRampToValueAtTime(0.001, now + subOffset + 0.014);
+
+        subSrc.connect(subBp);
+        subBp.connect(subGain);
+        subGain.connect(ac.destination);
+        subSrc.start(now + subOffset);
+      }
+
+      // Single crunchy cardstock fold + hand clatter burst
+      function triggerCrunchGrain(ac, startTime, duration, freqCenter, intensity, addClatter) {
+        if (!crunchBuffer) return;
+        const src = ac.createBufferSource();
+        src.buffer = crunchBuffer;
+        src.playbackRate.setValueAtTime(0.85 + Math.random() * 0.45, startTime);
+
+        // Highpass to keep crunch crisp and dry
+        const hp = ac.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.setValueAtTime(480, startTime);
+
+        // Resonant paper-buckle bandpass
+        const bp = ac.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(freqCenter, startTime);
+        bp.frequency.exponentialRampToValueAtTime(freqCenter * (0.72 + Math.random() * 0.5), startTime + duration);
+        bp.Q.setValueAtTime(1.6, startTime);
+
+        // Crisp high-frequency crinkle boost
+        const shelf = ac.createBiquadFilter();
+        shelf.type = 'highshelf';
+        shelf.frequency.setValueAtTime(3600, startTime);
+        shelf.gain.setValueAtTime(7.5, startTime);
+
+        const gain = ac.createGain();
+        gain.gain.setValueAtTime(0.001, startTime);
+        gain.gain.linearRampToValueAtTime(intensity, startTime + 0.018);
+        gain.gain.setValueAtTime(intensity * 0.85, startTime + duration * 0.55);
+        gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+
+        src.connect(hp);
+        hp.connect(bp);
+        bp.connect(shelf);
+        shelf.connect(gain);
+        gain.connect(ac.destination);
+
+        const offset = Math.random() * 0.8;
+        src.start(startTime, offset, duration + 0.02);
+
+        // Optional dry wooden/acrylic clatter as the detached hands tumble
+        if (addClatter) {
+          const knockOsc = ac.createOscillator();
+          knockOsc.type = 'triangle';
+          const kFreq = 420 + Math.random() * 340;
+          knockOsc.frequency.setValueAtTime(kFreq, startTime + 0.015);
+          knockOsc.frequency.exponentialRampToValueAtTime(kFreq * 0.38, startTime + 0.048);
+
+          const knockGain = ac.createGain();
+          knockGain.gain.setValueAtTime(intensity * 0.28, startTime + 0.015);
+          knockGain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.052);
+
+          knockOsc.connect(knockGain);
+          knockGain.connect(ac.destination);
+          knockOsc.start(startTime + 0.015);
+          knockOsc.stop(startTime + 0.055);
+        }
+      }
+
+      function playCollapseCrunch() {
+        const ac = ensureCtx();
+        if (!ac) return;
+        const now = ac.currentTime;
+
+        // 5 stepped crunchy Riso cardstock crumple bursts synced to the 4-FPS collapse frames
+        const steps = [
+          { t: 0.00, dur: 0.21, freq: 2100, amp: 0.38, clatter: true },
+          { t: 0.24, dur: 0.22, freq: 1750, amp: 0.42, clatter: true },
+          { t: 0.49, dur: 0.20, freq: 1480, amp: 0.36, clatter: true },
+          { t: 0.74, dur: 0.19, freq: 1920, amp: 0.30, clatter: true },
+          { t: 0.99, dur: 0.23, freq: 1320, amp: 0.34, clatter: false }
+        ];
+        steps.forEach((s) => {
+          triggerCrunchGrain(ac, now + s.t, s.dur, s.freq, s.amp, s.clatter);
+        });
+      }
+
+      function playRebuildCrunch() {
+        const ac = ensureCtx();
+        if (!ac) return;
+        const now = ac.currentTime;
+
+        // Crisp upward paper-unfolding crinkles synced to the 4-FPS rebuild frames
+        const steps = [
+          { t: 0.00, dur: 0.18, freq: 1450, amp: 0.25, clatter: false },
+          { t: 0.25, dur: 0.17, freq: 1850, amp: 0.26, clatter: true },
+          { t: 0.50, dur: 0.16, freq: 2300, amp: 0.24, clatter: true },
+          { t: 0.75, dur: 0.15, freq: 2750, amp: 0.20, clatter: false }
+        ];
+        steps.forEach((s) => {
+          triggerCrunchGrain(ac, now + s.t, s.dur, s.freq, s.amp, s.clatter);
+        });
+      }
+
+      function toggleMute() {
+        muted = !muted;
+      }
+
+      return { playClockTick, playCollapseCrunch, playRebuildCrunch, toggleMute };
+    })();
+
+    function startCollapseRebuild() {
+      if (animState === 'IDLE') {
+        animState = 'DROPPING';
+        animStartTime = (Math.floor(performance.now() / FRAME_INTERVAL_MS) - 1) * FRAME_INTERVAL_MS;
+        forceRenderFrame = true;
+        SoundFX.playCollapseCrunch();
+      }
+    }
+
+    function angleDistance(a, b) {
+      let diff = (a - b) % TWO_PI;
+      if (diff < -Math.PI) diff += TWO_PI;
+      if (diff > Math.PI) diff -= TWO_PI;
+      return diff;
+    }
+
+    function shortestDegDelta(fromDeg, toDeg) {
+      let d = ((toDeg - fromDeg) % 360 + 540) % 360 - 180;
+      return d;
+    }
+
+    const baseAngles = [];
+    for (let k = 0; k < 12; k++) {
+      baseAngles.push((k / 12) * TWO_PI - Math.PI / 2);
+    }
+
+    let lastSecond = -1;
+    let lastRisoStep = -1;
+
+    // Natural 1D gravity drop physics calculation
+    function calcPhysicsDrop(y0, yTarget, elapsedSec, totalDurSec) {
+      const tNorm = Math.min(1, Math.max(0, elapsedSec / totalDurSec));
+      if (tNorm < 0.85) {
+        const p = Math.pow(tNorm / 0.85, 2);
+        return { y: y0 + (yTarget - y0) * p, progress: p };
+      } else {
+        const tBounce = (tNorm - 0.85) / 0.15;
+        const bounceH = 14 * Math.sin(tBounce * Math.PI);
+        return { y: yTarget - bounceH, progress: 1 };
+      }
+    }
+
+    // Main animation loop — strictly quantized to 4 FPS (every 250ms) for true Riso stop-motion
+    function animate(timestamp) {
+      const risoStep = Math.floor(timestamp / FRAME_INTERVAL_MS);
+      if (risoStep === lastRisoStep && !forceRenderFrame) {
+        requestAnimationFrame(animate);
+        return;
+      }
+      lastRisoStep = risoStep;
+      forceRenderFrame = false;
+
+      const steppedTime = risoStep * FRAME_INTERVAL_MS;
+      triggerRisoTick();
+
+      let activeDate;
+      if (isLiveTime) {
+        activeDate = new Date();
+      } else {
+        const elapsed = steppedTime - manualTimeAnchor;
+        activeDate = new Date(manualTime.getTime() + elapsed);
+      }
+
+      const hours24 = activeDate.getHours();
+      const newPhase = hours24 < 12 ? 'AM' : 'PM';
+
+      if (newPhase !== currentPhase) {
+        currentPhase = newPhase;
+        startCollapseRebuild();
+      }
+
+      const ms = activeDate.getMilliseconds();
+      const rawSeconds = activeDate.getSeconds();
+      // Quantize sub-second to 4 frames per second (0ms, 250ms, 500ms, 750ms)
+      let subFrame = Math.min(3, Math.floor(ms / 250));
+      if (rawSeconds !== lastSecond) {
+        subFrame = 0; // Guarantee frame 0 impact on every new second
+        lastSecond = rawSeconds;
+        if (animState === 'IDLE') {
+          SoundFX.playClockTick(rawSeconds);
+        }
+      }
+
+      const quantMs = subFrame * 250;
+      const fracSeconds = rawSeconds + quantMs / 1000;
+      const minutes = activeDate.getMinutes() + fracSeconds / 60;
+      const hours12 = (hours24 % 12) + minutes / 60;
+
+      // 4-FPS stop-motion bounce & deform jolt across the 4 frames of each second:
+      // Frame 0 (0.00s): Impact stretch & overshoot
+      // Frame 1 (0.25s): Recoil flex
+      // Frame 2 (0.50s): Micro settle
+      // Frame 3 (0.75s): Rest
+      const JOLT_STEPS = [0.95, 0.36, 0.10, 0.0];
+      const BOUNCE_STEPS = [0.25, -0.07, 0.02, 0.0];
+      const joltFactor = JOLT_STEPS[subFrame];
+      const bounce = BOUNCE_STEPS[subFrame];
+
+      const pad = (n) => String(Math.floor(n)).padStart(2, '0');
+      const dispHour = hours24 % 12 === 0 ? 12 : hours24 % 12;
+      digitalCorner.textContent = `${pad(dispHour)}:${pad(activeDate.getMinutes())}:${pad(rawSeconds)} ${newPhase}`;
+
+      if (isLiveTime && !document.activeElement.isSameNode(manualTimeInput)) {
+        manualTimeInput.value = `${pad(hours24)}:${pad(activeDate.getMinutes())}:${pad(rawSeconds)}`;
+      }
+
+      // --- 4-FPS STEPPED ANIMATION TIMING FOR COLLAPSE & REBUILD ---
+      let dropProgress = 0;
+      let rebuildProgress = 0;
+
+      if (animState !== 'IDLE') {
+        const elapsedMs = Math.max(0, steppedTime - animStartTime);
+
+        if (animState === 'DROPPING') {
+          const phys = calcPhysicsDrop(0, 1, elapsedMs / 1000, DROP_PHASE_DUR / 1000);
+          dropProgress = phys.progress;
+
+          if (elapsedMs >= DROP_PHASE_DUR) {
+            animState = 'HOLD_PILE';
+            animStartTime = steppedTime;
+            dropProgress = 1;
+            updateMarkerLabels(currentPhase);
+          }
+        } else if (animState === 'HOLD_PILE') {
+          dropProgress = 1;
+          if (elapsedMs >= HOLD_PHASE_DUR) {
+            animState = 'REBUILDING';
+            animStartTime = steppedTime;
+            SoundFX.playRebuildCrunch();
+          }
+        } else if (animState === 'REBUILDING') {
+          const t = Math.min(1, elapsedMs / REBUILD_PHASE_DUR);
+          const spring = 1 - Math.exp(-4.6 * t) * Math.cos(5.4 * t);
+          rebuildProgress = Math.max(0, spring);
+
+          if (t >= 1) {
+            animState = 'IDLE';
+            rebuildProgress = 1;
+          }
+        }
+      } else {
+        updateMarkerLabels(currentPhase);
+      }
+
+      // Second hand 4-FPS stop-motion angle
+      const activeSec = (rawSeconds + bounce + 60) % 60;
+      const secAngle = (activeSec / 60) * TWO_PI - Math.PI / 2;
+
+      // Normal Hands Angles
+      const hourDeg = hours12 * 30;
+      const minDeg = minutes * 6;
+
+      // Long second hand outward deformation (steps at 4 FPS)
+      const pushAmt = deformIntensity;
+      const secondHandRadius = BASE_RADIUS + pushAmt + (joltFactor * 10);
+      const secTipX = CENTER.x + Math.cos(secAngle) * secondHandRadius;
+      const secTipY = CENTER.y + Math.sin(secAngle) * secondHandRadius;
+
+      let normSec = (secAngle + Math.PI / 2) % TWO_PI;
+      if (normSec < 0) normSec += TWO_PI;
+
+      const faceVertexPairs = [];
+      let secInserted = false;
+      const secTipNorm = { x: secTipX, y: secTipY };
+      let secTipCol = null;
+
+      for (let k = 0; k < 12; k++) {
+        const bAngle = baseAngles[k];
+        const normK = (k / 12) * TWO_PI;
+        const normNextK = ((k + 1) / 12) * TWO_PI;
+        const dist = Math.abs(angleDistance(secAngle, bAngle));
+
+        if (dist < 0.015) {
+          const ptNorm = { x: secTipX, y: secTipY };
+          const ptCol = COLLAPSED_FACE_VERTICES[k];
+          faceVertexPairs.push({ norm: ptNorm, col: ptCol, isSec: true });
+          secTipCol = ptCol;
+          secInserted = true;
+        } else {
+          const influence = Math.exp(-Math.pow(dist / 0.52, 2));
+          const r = BASE_RADIUS + (pushAmt * 0.42 * influence) + (joltFactor * 4 * Math.cos(dist * 2));
+          const ptNorm = {
+            x: CENTER.x + Math.cos(bAngle) * r,
+            y: CENTER.y + Math.sin(bAngle) * r
+          };
+          const ptCol = COLLAPSED_FACE_VERTICES[k];
+          faceVertexPairs.push({ norm: ptNorm, col: ptCol, isSec: false });
+
+          let inBetween = false;
+          if (k < 11) {
+            if (normSec > normK && normSec < normNextK) inBetween = true;
+          } else {
+            if (normSec > normK && normSec < TWO_PI) inBetween = true;
+          }
+
+          if (inBetween && !secInserted) {
+            const distNext = Math.abs(angleDistance(secAngle, baseAngles[(k + 1) % 12]));
+            if (distNext >= 0.015) {
+              const frac = k < 11 ? (normSec - normK) / (normNextK - normK) : (normSec - normK) / (TWO_PI - normK);
+              const nextK = (k + 1) % 12;
+              const c1 = COLLAPSED_FACE_VERTICES[k];
+              const c2 = COLLAPSED_FACE_VERTICES[nextK];
+              const colInterp = {
+                x: c1.x + (c2.x - c1.x) * frac,
+                y: c1.y + (c2.y - c1.y) * frac
+              };
+              faceVertexPairs.push({ norm: secTipNorm, col: colInterp, isSec: true });
+              secTipCol = colInterp;
+              secInserted = true;
+            }
+          }
+        }
+      }
+
+      if (!secInserted || !secTipCol) {
+        secTipCol = COLLAPSED_FACE_VERTICES[0];
+      }
+
+      // Riso Misregistration Offsets (steps at 4 FPS)
+      const faceOffX = risoState.regFaceX;
+      const faceOffY = risoState.regFaceY;
+      const redOffX = risoState.regRedX;
+      const redOffY = risoState.regRedY;
+      const blueOffX = risoState.regBlueX;
+      const blueOffY = risoState.regBlueY;
+
+      // --- SYNCHRONIZED CLOCK FACE POLYGON POINTS ---
+      const activeFacePoints = [];
+      const yellowFacePoints = [];
+      const aquaFacePoints = [];
+      let curSecTipX, curSecTipY;
+
+      for (let i = 0; i < faceVertexPairs.length; i++) {
+        const p = faceVertexPairs[i];
+        let curX, curY;
+
+        if (animState === 'IDLE') {
+          curX = p.norm.x;
+          curY = p.norm.y;
+        } else if (animState === 'DROPPING') {
+          curX = p.norm.x + (p.col.x - p.norm.x) * dropProgress;
+          curY = p.norm.y + (p.col.y - p.norm.y) * dropProgress;
+        } else if (animState === 'HOLD_PILE') {
+          curX = p.col.x;
+          curY = p.col.y;
+        } else if (animState === 'REBUILDING') {
+          curX = p.col.x + (p.norm.x - p.col.x) * rebuildProgress;
+          curY = p.col.y + (p.norm.y - p.col.y) * rebuildProgress;
+        }
+
+        if (p.isSec) {
+          curSecTipX = curX;
+          curSecTipY = curY;
+        }
+        activeFacePoints.push(curX.toFixed(2) + ',' + curY.toFixed(2));
+        yellowFacePoints.push((curX + faceOffX).toFixed(2) + ',' + (curY + faceOffY).toFixed(2));
+        aquaFacePoints.push((curX - faceOffX * 0.65).toFixed(2) + ',' + (curY - faceOffY * 0.65).toFixed(2));
+      }
+
+      if (curSecTipX === undefined) {
+        curSecTipX = secTipNorm.x;
+        curSecTipY = secTipNorm.y;
+      }
+
+      const pointsStr = activeFacePoints.join(' ');
+      clockShape.setAttribute('points', pointsStr);
+      clipPoly.setAttribute('points', pointsStr);
+      risoFaceYellow.setAttribute('points', yellowFacePoints.join(' '));
+      risoFaceAqua.setAttribute('points', aquaFacePoints.join(' '));
+
+      // --- SEPARATED COLLAPSE OF HANDS (hands detach when collapsing & reunite on rebuild, 100% inside blue face) ---
+      const colHourPivot = { x: 325, y: 665 };
+      const colMinPivot = { x: 445, y: 725 };
+      const colSecPivot = { x: 382, y: 698 };
+      const fallenHourDeg = 58;
+      const fallenMinDeg = 262;
+
+      let curHourX, curHourY, curMinX, curMinY, curSecBaseX, curSecBaseY;
+      let curHourDeg, curMinDeg;
+
+      if (animState === 'IDLE') {
+        curHourX = CENTER.x;
+        curHourY = CENTER.y;
+        curMinX = CENTER.x;
+        curMinY = CENTER.y;
+        curSecBaseX = CENTER.x;
+        curSecBaseY = CENTER.y;
+        curHourDeg = hourDeg;
+        curMinDeg = minDeg;
+      } else if (animState === 'DROPPING') {
+        const rotP = Math.min(1, Math.pow(dropProgress, 0.72));
+        curHourX = CENTER.x + (colHourPivot.x - CENTER.x) * dropProgress;
+        curHourY = CENTER.y + (colHourPivot.y - CENTER.y) * dropProgress;
+        curMinX = CENTER.x + (colMinPivot.x - CENTER.x) * dropProgress;
+        curMinY = CENTER.y + (colMinPivot.y - CENTER.y) * dropProgress;
+        curSecBaseX = CENTER.x + (colSecPivot.x - CENTER.x) * dropProgress;
+        curSecBaseY = CENTER.y + (colSecPivot.y - CENTER.y) * dropProgress;
+        curHourDeg = hourDeg + shortestDegDelta(hourDeg, fallenHourDeg) * rotP;
+        curMinDeg = minDeg + shortestDegDelta(minDeg, fallenMinDeg) * rotP;
+      } else if (animState === 'HOLD_PILE') {
+        curHourX = colHourPivot.x;
+        curHourY = colHourPivot.y;
+        curMinX = colMinPivot.x;
+        curMinY = colMinPivot.y;
+        curSecBaseX = colSecPivot.x;
+        curSecBaseY = colSecPivot.y;
+        curHourDeg = fallenHourDeg;
+        curMinDeg = fallenMinDeg;
+      } else if (animState === 'REBUILDING') {
+        curHourX = colHourPivot.x + (CENTER.x - colHourPivot.x) * rebuildProgress;
+        curHourY = colHourPivot.y + (CENTER.y - colHourPivot.y) * rebuildProgress;
+        curMinX = colMinPivot.x + (CENTER.x - colMinPivot.x) * rebuildProgress;
+        curMinY = colMinPivot.y + (CENTER.y - colMinPivot.y) * rebuildProgress;
+        curSecBaseX = colSecPivot.x + (CENTER.x - colSecPivot.x) * rebuildProgress;
+        curSecBaseY = colSecPivot.y + (CENTER.y - colSecPivot.y) * rebuildProgress;
+        curHourDeg = fallenHourDeg + shortestDegDelta(fallenHourDeg, hourDeg) * rebuildProgress;
+        curMinDeg = fallenMinDeg + shortestDegDelta(fallenMinDeg, minDeg) * rebuildProgress;
+      }
+
+      hourGroup.setAttribute('transform', `translate(${curHourX.toFixed(2)}, ${curHourY.toFixed(2)}) rotate(${curHourDeg.toFixed(2)})`);
+      hourGhostRed.setAttribute('transform', `translate(${(curHourX + redOffX).toFixed(2)}, ${(curHourY + redOffY).toFixed(2)}) rotate(${curHourDeg.toFixed(2)})`);
+      hourGhostBlue.setAttribute('transform', `translate(${(curHourX + blueOffX).toFixed(2)}, ${(curHourY + blueOffY).toFixed(2)}) rotate(${curHourDeg.toFixed(2)})`);
+
+      minuteGroup.setAttribute('transform', `translate(${curMinX.toFixed(2)}, ${curMinY.toFixed(2)}) rotate(${curMinDeg.toFixed(2)})`);
+      minuteGhostRed.setAttribute('transform', `translate(${(curMinX + redOffX).toFixed(2)}, ${(curMinY + redOffY).toFixed(2)}) rotate(${curMinDeg.toFixed(2)})`);
+      minuteGhostBlue.setAttribute('transform', `translate(${(curMinX + blueOffX).toFixed(2)}, ${(curMinY + blueOffY).toFixed(2)}) rotate(${curMinDeg.toFixed(2)})`);
+
+      // Second Hand connects its current base towards the polygon apex, leaving a few pixels gap before the rim
+      const TIP_GAP = 12;
+      const dx = curSecTipX - curSecBaseX;
+      const dy = curSecTipY - curSecBaseY;
+      const distToApex = Math.hypot(dx, dy);
+      const ratio = distToApex > TIP_GAP ? (distToApex - TIP_GAP) / distToApex : 0.88;
+      const lineEndX = curSecBaseX + dx * ratio;
+      const lineEndY = curSecBaseY + dy * ratio;
+
+      secondLine.setAttribute('x1', curSecBaseX.toFixed(2));
+      secondLine.setAttribute('y1', curSecBaseY.toFixed(2));
+      secondLine.setAttribute('x2', lineEndX.toFixed(2));
+      secondLine.setAttribute('y2', lineEndY.toFixed(2));
+
+      // Riso Second Hand Echo
+      secondEcho.setAttribute('x1', (curSecBaseX + redOffX * 0.8).toFixed(2));
+      secondEcho.setAttribute('y1', (curSecBaseY + redOffY * 0.8).toFixed(2));
+      secondEcho.setAttribute('x2', (lineEndX + redOffX * 1.1).toFixed(2));
+      secondEcho.setAttribute('y2', (lineEndY + redOffY * 1.1).toFixed(2));
+
+      // --- SYNCHRONIZED COLLAPSE OF WORDS ---
+      markerElements.forEach((el, index) => {
+        const hourAngle = baseAngles[index];
+        const distToSec = Math.abs(angleDistance(secAngle, hourAngle));
+        let markerRadius = MARKER_RADIUS;
+        if (distToSec < 0.28) {
+          markerRadius += (pushAmt * 0.12);
+        }
+
+        const normX = CENTER.x + Math.cos(hourAngle) * markerRadius;
+        const normY = CENTER.y + Math.sin(hourAngle) * markerRadius;
+
+        const pile = COLLAPSED_WORD_POSITIONS[index];
+
+        let curX, curY, curRot;
+
+        if (animState === 'IDLE') {
+          curX = normX;
+          curY = normY;
+          curRot = 0;
+        } else if (animState === 'DROPPING') {
+          curX = normX + (pile.x - normX) * dropProgress;
+          curY = normY + (pile.y - normY) * dropProgress;
+          curRot = pile.rot * dropProgress;
+        } else if (animState === 'HOLD_PILE') {
+          curX = pile.x;
+          curY = pile.y;
+          curRot = pile.rot;
+        } else if (animState === 'REBUILDING') {
+          curX = pile.x + (normX - pile.x) * rebuildProgress;
+          curY = pile.y + (normY - pile.y) * rebuildProgress;
+          curRot = pile.rot * (1 - rebuildProgress);
+        }
+
+        el.setAttribute('x', curX.toFixed(2));
+        el.setAttribute('y', curY.toFixed(2));
+        el.setAttribute('transform', `rotate(${curRot.toFixed(1)}, ${curX.toFixed(2)}, ${curY.toFixed(2)})`);
+
+        const rEl = markerRedElements[index];
+        const rx = curX + redOffX;
+        const ry = curY + redOffY;
+        rEl.setAttribute('x', rx.toFixed(2));
+        rEl.setAttribute('y', ry.toFixed(2));
+        rEl.setAttribute('transform', `rotate(${curRot.toFixed(1)}, ${rx.toFixed(2)}, ${ry.toFixed(2)})`);
+
+        const bEl = markerBlueElements[index];
+        const bx = curX + blueOffX;
+        const by = curY + blueOffY;
+        bEl.setAttribute('x', bx.toFixed(2));
+        bEl.setAttribute('y', by.toFixed(2));
+        bEl.setAttribute('transform', `rotate(${curRot.toFixed(1)}, ${bx.toFixed(2)}, ${by.toFixed(2)})`);
+      });
+
+      requestAnimationFrame(animate);
+    }
+
+    requestAnimationFrame(animate);
+
+    // --- Clean Minimal Controls Events ---
+
+    manualTimeInput.addEventListener('change', (e) => {
+      const parts = e.target.value.split(':');
+      if (parts.length >= 2) {
+        const h = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10);
+        const s = parts[2] ? parseInt(parts[2], 10) : 0;
+
+        const d = new Date();
+        d.setHours(h, m, s, 0);
+
+        manualTime = d;
+        manualTimeAnchor = performance.now();
+        isLiveTime = false;
+        btnLiveToggle.classList.remove('active');
+        btnLiveToggle.textContent = '○ Set to Live';
+      }
+    });
+
+    btnLiveToggle.addEventListener('click', () => {
+      isLiveTime = true;
+      btnLiveToggle.classList.add('active');
+      btnLiveToggle.textContent = '● Live';
+    });
+
+    btnTriggerCollapse.addEventListener('click', () => {
+      startCollapseRebuild();
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'h' || e.key === 'H') {
+        document.getElementById('ui-panel').classList.toggle('collapsed');
+        digitalCorner.classList.toggle('collapsed');
+        figmaBadge.classList.toggle('collapsed');
+      } else if (e.key === 'c' || e.key === 'C') {
+        startCollapseRebuild();
+      } else if (e.key === 'm' || e.key === 'M') {
+        SoundFX.toggleMute();
+      }
+    });
+  </script>
 </body>
 </html>
