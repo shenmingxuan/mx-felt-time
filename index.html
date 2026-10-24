@@ -224,22 +224,7 @@
       transition: opacity 0.25s ease, transform 0.25s ease;
     }
 
-    /* Mode indicator badge */
-    #figma-badge {
-      position: fixed;
-      top: 24px;
-      left: 24px;
-      font-family: var(--font-mono);
-      font-size: 12px;
-      font-weight: 500;
-      letter-spacing: 0.8px;
-      color: rgba(0, 0, 0, 0.5);
-      pointer-events: none;
-      transition: opacity 0.25s ease, transform 0.25s ease;
-    }
-
-    #digital-corner.collapsed,
-    #figma-badge.collapsed {
+    #digital-corner.collapsed {
       opacity: 0;
       pointer-events: none;
     }
@@ -248,8 +233,6 @@
 <body>
 
   <div id="stage">
-    <div id="figma-badge">Felt Time · Press 'H' to toggle controls</div>
-
     <div id="clock-wrapper">
       <!-- SVG Canvas with strict dynamic clipPath: Elements NEVER escape the blue clock face -->
       <svg id="clock-svg" viewBox="-40 -40 908 908">
@@ -434,7 +417,7 @@
     const secondLine = document.getElementById('second-line');
     const secondEcho = document.getElementById('second-echo');
     const digitalCorner = document.getElementById('digital-corner');
-    const figmaBadge = document.getElementById('figma-badge');
+    const uiPanel = document.getElementById('ui-panel');
     const manualTimeInput = document.getElementById('manual-time-input');
     const btnLiveToggle = document.getElementById('btn-live-toggle');
     const btnTriggerCollapse = document.getElementById('btn-trigger-collapse');
@@ -970,7 +953,7 @@
         updateMarkerLabels(currentPhase);
       }
 
-      // Second hand 4-FPS stop-motion angle
+      // Second hand 2-FPS stop-motion angle
       const activeSec = (rawSeconds + bounce + 60) % 60;
       const secAngle = (activeSec / 60) * TWO_PI - Math.PI / 2;
 
@@ -978,7 +961,7 @@
       const hourDeg = hours12 * 30;
       const minDeg = minutes * 6;
 
-      // Long second hand outward deformation (steps at 4 FPS)
+      // Long second hand outward deformation (steps at 2 FPS)
       const pushAmt = deformIntensity;
       const secondHandRadius = BASE_RADIUS + pushAmt + (joltFactor * 10);
       const secTipX = CENTER.x + Math.cos(secAngle) * secondHandRadius;
@@ -1044,7 +1027,7 @@
         secTipCol = COLLAPSED_FACE_VERTICES[0];
       }
 
-      // Riso Misregistration Offsets (steps at 4 FPS)
+      // Riso Misregistration Offsets (steps at 2 FPS)
       const faceOffX = risoState.regFaceX;
       const faceOffY = risoState.regFaceY;
       const redOffX = risoState.regRedX;
@@ -1261,11 +1244,49 @@
       startCollapseRebuild();
     });
 
+    function toggleUIControls() {
+      uiPanel.classList.toggle('collapsed');
+      digitalCorner.classList.toggle('collapsed');
+    }
+
+    function isPointInPolygon(x, y, polyPoints) {
+      let inside = false;
+      for (let i = 0, j = polyPoints.length - 1; i < polyPoints.length; j = i++) {
+        const xi = polyPoints[i].x, yi = polyPoints[i].y;
+        const xj = polyPoints[j].x, yj = polyPoints[j].y;
+        const intersect = ((yi > y) !== (yj > y)) &&
+          (x < (xj - xi) * (y - yi) / (yj - yi + 1e-9) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+
+    // Click outside the clock face toggles UI controls; click inside the clock face triggers collapse
+    window.addEventListener('click', (e) => {
+      if (e.target.closest && e.target.closest('#ui-panel')) return;
+
+      const svgEl = document.getElementById('clock-svg');
+      const rect = svgEl.getBoundingClientRect();
+      // Map clientX/clientY to SVG viewBox (-40, -40, 908, 908)
+      const svgX = -40 + ((e.clientX - rect.left) / rect.width) * 908;
+      const svgY = -40 + ((e.clientY - rect.top) / rect.height) * 908;
+
+      const ptsAttr = clockShape.getAttribute('points') || '';
+      const polyPts = ptsAttr.trim().split(/\s+/).filter(Boolean).map((pair) => {
+        const [px, py] = pair.split(',').map(Number);
+        return { x: px, y: py };
+      });
+
+      if (polyPts.length >= 3 && isPointInPolygon(svgX, svgY, polyPts)) {
+        startCollapseRebuild();
+      } else {
+        toggleUIControls();
+      }
+    });
+
     window.addEventListener('keydown', (e) => {
       if (e.key === 'h' || e.key === 'H') {
-        document.getElementById('ui-panel').classList.toggle('collapsed');
-        digitalCorner.classList.toggle('collapsed');
-        figmaBadge.classList.toggle('collapsed');
+        toggleUIControls();
       } else if (e.key === 'c' || e.key === 'C') {
         startCollapseRebuild();
       } else if (e.key === 'm' || e.key === 'M') {
