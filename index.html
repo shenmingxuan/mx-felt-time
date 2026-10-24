@@ -1,0 +1,1207 @@
+/**
+ * Circadian AM/PM Deforming Clock for p5.js (with 4-FPS Risograph Print & Sound FX)
+ *
+ * Features:
+ * - True 4-FPS (250ms per frame) stop-motion Risograph simulation for deform, bounce, and collapse
+ * - Pink & Blue Riso ink grain (+25% visibility) and 2x micro natural white print voids
+ * - Soft, slightly blurry grainy Risograph edge bleed (#p5-riso-edge-filter) across all visual elements
+ * - All 3 hands have rounded ends, with no standalone center pivot dot
+ * - Hands detach and separate inside the cyan puddle on collapse, then reunite on rebuild
+ * - Procedural Web Audio SoundFX: natural mechanical tick-tock & crunchy cardstock collapse/rebuild
+ * - Clean control bar with pure white borderless time selector, Live toggle, and pastel cyan Collapse button
+ * - Shortcuts: 'H' hides all UI, 'C' triggers collapse, 'T' toggles AM/PM, 'M' mutes/unmutes audio
+ */
+
+// Canvas & Geometry
+const W = 828;
+const H = 828;
+const CENTER_X = 414;
+const CENTER_Y = 414;
+const BASE_RADIUS = 350;
+const MARKER_RADIUS = 295;
+const DEFORM_INTENSITY = 46;
+const TIP_GAP = 12; // Gap in pixels between second hand tip and face rim
+
+// Circadian lexicons
+const CIRCADIAN_AM = [
+  'ZZZ',    // 12 AM
+  'ZZZ',    // 1 AM
+  'ZZZ',    // 2 AM
+  'ZZZ',    // 3 AM
+  'ZZZ',    // 4 AM
+  'ZZZ',    // 5 AM
+  'HFAWK',  // 6 AM (Half-awake)
+  'WKUP',   // 7 AM (Wake up)
+  'BRKFST', // 8 AM (Breakfast)
+  'CMT',    // 9 AM (Commute)
+  'WRK',    // 10 AM (Work)
+  'WRK'     // 11 AM (Work)
+];
+
+const CIRCADIAN_PM = [
+  'LNCH',   // 12 PM (Lunch)
+  'FDCM',   // 1 PM (Food coma)
+  'DRWSY',  // 2 PM (Drowsy)
+  'WRK',    // 3 PM (Work)
+  'WRKZZ',  // 4 PM (Work-zzz)
+  'TRD',    // 5 PM (Tired)
+  'CMT',    // 6 PM (Commute)
+  'DNR',    // 7 PM (Dinner)
+  'TV',     // 8 PM (TV)
+  'SHWR',   // 9 PM (Shower)
+  'RDG',    // 10 PM (Reading)
+  'ZZZ'     // 11 PM (Sleep)
+];
+
+// Collapsed Puddle Face Vertices (matching crumpled puddle reference)
+const COLLAPSED_FACE_VERTICES = [
+  { x: 250, y: 440 }, // 12h -> top peak
+  { x: 390, y: 560 }, // 1h  -> middle dip
+  { x: 510, y: 550 }, // 2h  -> middle ridge
+  { x: 600, y: 580 }, // 3h  -> right shoulder
+  { x: 640, y: 740 }, // 4h  -> right slope
+  { x: 730, y: 805 }, // 5h  -> far right tail
+  { x: 530, y: 805 }, // 6h  -> floor right
+  { x: 414, y: 800 }, // 7h  -> floor center
+  { x: 300, y: 805 }, // 8h  -> floor left
+  { x: 180, y: 795 }, // 9h  -> floor far left
+  { x: 110, y: 760 }, // 10h -> left tail
+  { x: 150, y: 580 }  // 11h -> left rising slope
+];
+
+// Resting positions of words strictly WITHIN the collapsed puddle
+const COLLAPSED_WORD_POSITIONS = [
+  { x: 265, y: 530, rot: -0.24 }, // 12
+  { x: 350, y: 620, rot: -0.31 }, // 1
+  { x: 430, y: 650, rot: 0.21 },  // 2
+  { x: 480, y: 690, rot: 0.14 },  // 3
+  { x: 540, y: 720, rot: -0.07 }, // 4
+  { x: 590, y: 750, rot: 0.17 },  // 5
+  { x: 380, y: 765, rot: 0.14 },  // 6
+  { x: 280, y: 750, rot: -0.21 }, // 7
+  { x: 200, y: 725, rot: 0.38 },  // 8
+  { x: 210, y: 650, rot: 0.24 },  // 9
+  { x: 290, y: 680, rot: -0.14 }, // 10
+  { x: 360, y: 710, rot: 0.26 }   // 11
+];
+
+// Animation Phase Timing (ms) — tuned for 4 FPS (250ms per stop-motion frame)
+const FRAME_INTERVAL_MS = 250; // 4 frames per second
+const DROP_PHASE_DUR = 1250;   // 5 stop-motion frames
+const HOLD_PHASE_DUR = 500;    // 2 stop-motion frames
+const REBUILD_PHASE_DUR = 1250;// 5 stop-motion frames
+
+// State Variables
+let currentPhase = 'AM';
+let animState = 'IDLE'; // 'IDLE', 'DROPPING', 'HOLD_PILE', 'REBUILDING'
+let animStartTime = 0;
+let lastSecond = -1;
+let lastRisoStep = -1;
+let steppedTime = 0;
+let forceRenderFrame = true;
+
+let isLiveTime = true;
+let manualTime = new Date();
+let manualTimeAnchor = 0;
+
+let baseAngles = [];
+
+// Riso Print State & Textures
+let risoGrainCanvas;
+let risoState = {
+  seedX: 0,
+  seedY: 0,
+  regRedX: 1.4,
+  regRedY: -1.1,
+  regBlueX: -1.3,
+  regBlueY: 1.0,
+  regFaceX: 2.8,
+  regFaceY: 2.2,
+  whiteSpots: []
+};
+
+// UI & Overlay Elements
+let uiPanel;
+let timeInput;
+let btnLive;
+let btnCollapse;
+let digitalBadge;
+let topBadge;
+let grainOverlayCanvas;
+let grainOverlayCtx;
+
+function setup() {
+  createCanvas(W, H);
+  textFont('Google Sans Mono, monospace');
+  textSize(28);
+  textAlign(CENTER, CENTER);
+
+  let c = select('canvas');
+  if (c) {
+    c.style('display', 'block');
+    c.style('margin', 'auto');
+  }
+
+  for (let k = 0; k < 12; k++) {
+    baseAngles.push((k / 12) * TWO_PI - HALF_PI);
+  }
+
+  let h = hour();
+  currentPhase = h < 12 ? 'AM' : 'PM';
+
+  // Build UI, Google Font link, SVG Riso edge filter, and fullscreen grain overlay
+  createControlPlate();
+
+  // Generate offscreen Risograph grain texture
+  createRisoTextures();
+  triggerRisoTick();
+}
+
+/**
+ * Generates subtle tileable Risograph ink grain in PINK and BLUE Riso ink colors (zero gray!)
+ */
+function createRisoTextures() {
+  const size = 256;
+  risoGrainCanvas = document.createElement('canvas');
+  risoGrainCanvas.width = size;
+  risoGrainCanvas.height = size;
+  const ctx = risoGrainCanvas.getContext('2d');
+  const imgData = ctx.createImageData(size, size);
+  const data = imgData.data;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = Math.random();
+    if (r < 0.14) {
+      // Riso Fluorescent Pink / Magenta ink grain (#e45ab5)
+      data[i] = 228;
+      data[i + 1] = 90;
+      data[i + 2] = 181;
+      data[i + 3] = Math.floor(Math.pow(Math.random(), 1.4) * 72 + 18);
+    } else if (r < 0.26) {
+      // Light Bubblegum Pink ink grain (#ffaee8)
+      data[i] = 255;
+      data[i + 1] = 174;
+      data[i + 2] = 232;
+      data[i + 3] = Math.floor(Math.pow(Math.random(), 1.4) * 82 + 20);
+    } else if (r < 0.40) {
+      // Riso Aqua / Cyan-Blue ink grain (#3bbbe0)
+      data[i] = 59;
+      data[i + 1] = 187;
+      data[i + 2] = 224;
+      data[i + 3] = Math.floor(Math.pow(Math.random(), 1.4) * 69 + 18);
+    } else if (r < 0.52) {
+      // Pastel Ice Blue / Cyan ink grain (#c8fafa)
+      data[i] = 200;
+      data[i + 1] = 250;
+      data[i + 2] = 250;
+      data[i + 3] = Math.floor(Math.pow(Math.random(), 1.4) * 85 + 20);
+    } else {
+      data[i + 3] = 0;
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
+/**
+ * Triggers a fresh Risograph print registration shift, pink/blue grain step & micro white print voids at 4 FPS (every 250ms)
+ */
+function triggerRisoTick() {
+  risoState.seedX = Math.floor(Math.random() * 256);
+  risoState.seedY = Math.floor(Math.random() * 256);
+  const edgeNoise = document.getElementById('p5-riso-edge-noise');
+  if (edgeNoise) {
+    edgeNoise.setAttribute('seed', String(Math.floor(Math.random() * 999)));
+  }
+
+  // Subtle drum misregistration offsets
+  const angle1 = Math.random() * TWO_PI;
+  const angle2 = angle1 + 2.1 + (Math.random() - 0.5) * 0.8;
+  risoState.regRedX = Math.cos(angle1) * 1.5;
+  risoState.regRedY = Math.sin(angle1) * 1.5;
+  risoState.regBlueX = Math.cos(angle2) * 1.4;
+  risoState.regBlueY = Math.sin(angle2) * 1.4;
+
+  const faceAngle = Math.random() * TWO_PI;
+  risoState.regFaceX = Math.cos(faceAngle) * 2.8;
+  risoState.regFaceY = Math.sin(faceAngle) * 2.8;
+
+  // 2x increased count (~150-206) of tiny organic white ink voids
+  const count = 150 + Math.floor(Math.random() * 56);
+  risoState.whiteSpots = [];
+  for (let i = 0; i < count; i++) {
+    const rx = 0.3 + Math.pow(Math.random(), 2.2) * 0.8;
+    const ry = rx * (0.55 + Math.random() * 0.65);
+    risoState.whiteSpots.push({
+      nx: Math.random(),
+      ny: Math.random(),
+      rx: rx,
+      ry: ry,
+      rot: Math.random() * Math.PI,
+      alpha: 0.40 + Math.random() * 0.45,
+      hasSatellite: Math.random() < 0.35,
+      satDx: (Math.random() - 0.5) * 1.6,
+      satDy: (Math.random() - 0.5) * 1.6
+    });
+  }
+
+  applyRisoGrainOverlay();
+}
+
+function createControlPlate() {
+  // Auto-inject Google Sans Mono font so p5.js Web Editor renders the exact typeface
+  if (!document.getElementById('p5-google-sans-mono')) {
+    const link = document.createElement('link');
+    link.id = 'p5-google-sans-mono';
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=Google+Sans+Mono:wght@400..700&display=swap';
+    document.head.appendChild(link);
+  }
+
+  // Inject SVG filter for authentic slightly-blurry, grainy Risograph edge bleed (25% less blurry)
+  const svgFilterWrap = createDiv(`
+    <svg width="0" height="0" style="position:fixed;top:0;left:0;pointer-events:none;z-index:-1;">
+      <defs>
+        <filter id="p5-riso-edge-filter" x="-8%" y="-8%" width="116%" height="116%" color-interpolation-filters="sRGB">
+          <feTurbulence id="p5-riso-edge-noise" type="fractalNoise" baseFrequency="0.72" numOctaves="3" seed="1" result="noise" />
+          <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.95" xChannelSelector="R" yChannelSelector="G" result="roughened" />
+          <feGaussianBlur in="roughened" stdDeviation="0.51" />
+        </filter>
+      </defs>
+    </svg>
+  `);
+  svgFilterWrap.style('position', 'fixed');
+  svgFilterWrap.style('pointer-events', 'none');
+
+  // Create fullscreen Riso grain & white spots overlay canvas (stays crisp above the edge-filtered clock canvas)
+  grainOverlayCanvas = document.createElement('canvas');
+  grainOverlayCanvas.id = 'p5-riso-grain-overlay';
+  grainOverlayCanvas.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:50;';
+  document.body.appendChild(grainOverlayCanvas);
+  grainOverlayCtx = grainOverlayCanvas.getContext('2d');
+
+  const resizeOverlay = () => {
+    grainOverlayCanvas.width = window.innerWidth;
+    grainOverlayCanvas.height = window.innerHeight;
+    applyRisoGrainOverlay();
+  };
+  resizeOverlay();
+  window.addEventListener('resize', resizeOverlay);
+
+  createElement('style', `
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: rgb(245, 169, 227);
+      margin: 0;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    canvas.p5Canvas {
+      filter: url(#p5-riso-edge-filter);
+      max-width: 88vmin;
+      max-height: 88vmin;
+      width: auto !important;
+      height: auto !important;
+    }
+    #p5-ui-panel {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      padding: 10px 18px;
+      border-radius: 40px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 10px 35px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.04);
+      font-family: 'Google Sans Mono', monospace;
+      font-size: 13px;
+      color: #000;
+      z-index: 9999;
+      user-select: none;
+      transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    #p5-ui-panel.collapsed {
+      transform: translateX(-50%) translateY(140%);
+      opacity: 0;
+      pointer-events: none;
+    }
+    .p5-control-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    #p5-time-input {
+      font-family: 'Google Sans Mono', monospace;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 8px 16px;
+      border-radius: 999px;
+      border: none;
+      background: #ffffff;
+      color: #000;
+      width: 156px;
+      outline: none;
+      box-shadow: none;
+    }
+    #p5-time-input:hover,
+    #p5-time-input:focus {
+      background: #ffffff;
+      border: none;
+      outline: none;
+    }
+    .p5-btn {
+      font-family: 'Google Sans Mono', monospace;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 8px 18px;
+      border-radius: 999px;
+      border: none;
+      background: #ffffff;
+      color: #000;
+      cursor: pointer;
+      outline: none;
+      transition: all 0.15s ease;
+    }
+    .p5-btn:hover {
+      background: #f4f4f4;
+    }
+    .p5-btn.active {
+      background: #000;
+      color: #fff;
+    }
+    .p5-btn-collapse {
+      background: #d6fcfc;
+      border: none;
+      color: #000;
+      font-family: 'Google Sans Mono', monospace;
+      font-size: 14px;
+      font-weight: 500;
+      padding: 8px 22px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+    .p5-btn-collapse:hover {
+      background: #c2f7f7;
+    }
+    #p5-digital-corner {
+      position: fixed;
+      bottom: 24px;
+      left: 24px;
+      font-family: 'Google Sans Mono', monospace;
+      font-size: 13px;
+      font-weight: 500;
+      color: rgba(0, 0, 0, 0.65);
+      background: rgba(255, 255, 255, 0.65);
+      padding: 6px 14px;
+      border-radius: 20px;
+      letter-spacing: 0.5px;
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+      z-index: 9999;
+      transition: opacity 0.25s ease;
+    }
+    #p5-top-badge {
+      position: fixed;
+      top: 24px;
+      left: 24px;
+      font-family: 'Google Sans Mono', monospace;
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.8px;
+      color: rgba(0, 0, 0, 0.5);
+      pointer-events: none;
+      z-index: 9999;
+      transition: opacity 0.25s ease;
+    }
+    #p5-digital-corner.collapsed,
+    #p5-top-badge.collapsed {
+      opacity: 0;
+      pointer-events: none;
+    }
+  `);
+
+  topBadge = createDiv("Circadian AM/PM Clock · Press 'H' to toggle controls");
+  topBadge.id('p5-top-badge');
+
+  uiPanel = createDiv();
+  uiPanel.id('p5-ui-panel');
+
+  let group = createDiv();
+  group.class('p5-control-group');
+  group.parent(uiPanel);
+
+  timeInput = createInput('', 'time');
+  timeInput.id('p5-time-input');
+  timeInput.attribute('step', '1');
+  timeInput.parent(group);
+
+  btnLive = createButton('● Live');
+  btnLive.class('p5-btn active');
+  btnLive.parent(group);
+
+  btnCollapse = createButton('Collapse Now');
+  btnCollapse.class('p5-btn p5-btn-collapse');
+  btnCollapse.parent(uiPanel);
+
+  digitalBadge = createDiv('00:00:00 AM');
+  digitalBadge.id('p5-digital-corner');
+
+  timeInput.input(() => {
+    let val = timeInput.value();
+    let parts = val.split(':');
+    if (parts.length >= 2) {
+      let h = parseInt(parts[0], 10);
+      let m = parseInt(parts[1], 10);
+      let s = parts[2] ? parseInt(parts[2], 10) : 0;
+      let d = new Date();
+      d.setHours(h, m, s, 0);
+      manualTime = d;
+      manualTimeAnchor = millis();
+      isLiveTime = false;
+      btnLive.removeClass('active');
+      btnLive.html('○ Set to Live');
+    }
+  });
+
+  btnLive.mousePressed(() => {
+    isLiveTime = true;
+    btnLive.addClass('active');
+    btnLive.html('● Live');
+  });
+
+  btnCollapse.mousePressed(() => {
+    triggerCollapse();
+  });
+}
+
+function draw() {
+  let nowMs = millis();
+  let risoStep = Math.floor(nowMs / FRAME_INTERVAL_MS);
+  if (risoStep === lastRisoStep && !forceRenderFrame) {
+    return;
+  }
+  lastRisoStep = risoStep;
+  forceRenderFrame = false;
+
+  steppedTime = risoStep * FRAME_INTERVAL_MS;
+  triggerRisoTick();
+
+  background(245, 169, 227); // Bubblegum pink paper base
+
+  let activeDate;
+  if (isLiveTime) {
+    activeDate = new Date();
+  } else {
+    let elapsed = steppedTime - manualTimeAnchor;
+    activeDate = new Date(manualTime.getTime() + elapsed);
+  }
+
+  let hr24 = activeDate.getHours();
+  let newPhase = hr24 < 12 ? 'AM' : 'PM';
+
+  if (newPhase !== currentPhase) {
+    currentPhase = newPhase;
+    triggerCollapse();
+  }
+
+  let sec = activeDate.getSeconds();
+  let ms = activeDate.getMilliseconds();
+  // Quantize sub-second to 4 frames per second (0ms, 250ms, 500ms, 750ms)
+  let subFrame = Math.min(3, Math.floor(ms / 250));
+  if (sec !== lastSecond) {
+    subFrame = 0; // Guarantee frame 0 impact on every new second
+    lastSecond = sec;
+    if (animState === 'IDLE') {
+      SoundFX.playClockTick(sec);
+    }
+  }
+
+  let quantMs = subFrame * 250;
+  let fracSec = sec + quantMs / 1000.0;
+  let minVal = activeDate.getMinutes() + fracSec / 60.0;
+  let hr12 = (hr24 % 12) + minVal / 60.0;
+
+  // Update UI panel values
+  let pad = n => String(Math.floor(n)).padStart(2, '0');
+  let dispHour = hr24 % 12 === 0 ? 12 : hr24 % 12;
+  if (digitalBadge) {
+    digitalBadge.html(`${pad(dispHour)}:${pad(activeDate.getMinutes())}:${pad(sec)} ${newPhase}`);
+  }
+  if (isLiveTime && timeInput && document.activeElement !== timeInput.elt) {
+    timeInput.value(`${pad(hr24)}:${pad(activeDate.getMinutes())}:${pad(sec)}`);
+  }
+
+  // 4-FPS stop-motion bounce & deform jolt across the 4 frames of each second:
+  const JOLT_STEPS = [0.95, 0.36, 0.10, 0.0];
+  const BOUNCE_STEPS = [0.25, -0.07, 0.02, 0.0];
+  let joltFactor = JOLT_STEPS[subFrame];
+  let bounce = BOUNCE_STEPS[subFrame];
+
+  let activeSec = (sec + bounce + 60) % 60;
+  let secAngle = (activeSec / 60.0) * TWO_PI - HALF_PI;
+
+  let hourAngle = (hr12 / 12.0) * TWO_PI - HALF_PI;
+  let minAngle = (minVal / 60.0) * TWO_PI - HALF_PI;
+
+  // --- 4-FPS Stepped Animation progress calculations ---
+  let dropProgress = 0;
+  let rebuildProgress = 0;
+
+  if (animState !== 'IDLE') {
+    let elapsed = Math.max(0, steppedTime - animStartTime);
+
+    if (animState === 'DROPPING') {
+      let tNorm = Math.min(1, Math.max(0, elapsed / DROP_PHASE_DUR));
+      if (tNorm < 0.85) {
+        dropProgress = Math.pow(tNorm / 0.85, 2);
+      } else {
+        dropProgress = 1;
+      }
+
+      if (elapsed >= DROP_PHASE_DUR) {
+        animState = 'HOLD_PILE';
+        animStartTime = steppedTime;
+        dropProgress = 1;
+      }
+    } else if (animState === 'HOLD_PILE') {
+      dropProgress = 1;
+      if (elapsed >= HOLD_PHASE_DUR) {
+        animState = 'REBUILDING';
+        animStartTime = steppedTime;
+        SoundFX.playRebuildCrunch();
+      }
+    } else if (animState === 'REBUILDING') {
+      let t = Math.min(1, elapsed / REBUILD_PHASE_DUR);
+      let spring = 1 - Math.exp(-4.6 * t) * Math.cos(5.4 * t);
+      rebuildProgress = Math.max(0, spring);
+
+      if (t >= 1) {
+        animState = 'IDLE';
+        rebuildProgress = 1;
+      }
+    }
+  }
+
+  // --- Compute Face Polygon Vertices & Apex ---
+  let pushAmt = DEFORM_INTENSITY;
+  let apexRadius = BASE_RADIUS + pushAmt + (joltFactor * 10);
+  let apexNormX = CENTER_X + Math.cos(secAngle) * apexRadius;
+  let apexNormY = CENTER_Y + Math.sin(secAngle) * apexRadius;
+
+  let normSec = (secAngle + HALF_PI) % TWO_PI;
+  if (normSec < 0) normSec += TWO_PI;
+
+  let faceVertexPairs = [];
+  let secInserted = false;
+  let secApexNorm = { x: apexNormX, y: apexNormY };
+  let secApexCol = null;
+
+  for (let k = 0; k < 12; k++) {
+    let bAngle = baseAngles[k];
+    let normK = (k / 12.0) * TWO_PI;
+    let normNextK = ((k + 1) / 12.0) * TWO_PI;
+    let dAngle = Math.abs(angleDist(secAngle, bAngle));
+
+    if (dAngle < 0.015) {
+      let ptNorm = { x: apexNormX, y: apexNormY };
+      let ptCol = COLLAPSED_FACE_VERTICES[k];
+      faceVertexPairs.push({ norm: ptNorm, col: ptCol, isSec: true });
+      secApexCol = ptCol;
+      secInserted = true;
+    } else {
+      let influence = Math.exp(-Math.pow(dAngle / 0.52, 2));
+      let r = BASE_RADIUS + (pushAmt * 0.42 * influence) + (joltFactor * 4 * Math.cos(dAngle * 2));
+      let ptNorm = {
+        x: CENTER_X + Math.cos(bAngle) * r,
+        y: CENTER_Y + Math.sin(bAngle) * r
+      };
+      let ptCol = COLLAPSED_FACE_VERTICES[k];
+      faceVertexPairs.push({ norm: ptNorm, col: ptCol, isSec: false });
+
+      let inBetween = false;
+      if (k < 11) {
+        if (normSec > normK && normSec < normNextK) inBetween = true;
+      } else {
+        if (normSec > normK && normSec < TWO_PI) inBetween = true;
+      }
+
+      if (inBetween && !secInserted) {
+        let distNext = Math.abs(angleDist(secAngle, baseAngles[(k + 1) % 12]));
+        if (distNext >= 0.015) {
+          let frac = k < 11 ? (normSec - normK) / (normNextK - normK) : (normSec - normK) / (TWO_PI - normK);
+          let nextK = (k + 1) % 12;
+          let c1 = COLLAPSED_FACE_VERTICES[k];
+          let c2 = COLLAPSED_FACE_VERTICES[nextK];
+          let colInterp = {
+            x: c1.x + (c2.x - c1.x) * frac,
+            y: c1.y + (c2.y - c1.y) * frac
+          };
+          faceVertexPairs.push({ norm: secApexNorm, col: colInterp, isSec: true });
+          secApexCol = colInterp;
+          secInserted = true;
+        }
+      }
+    }
+  }
+
+  if (!secInserted || !secApexCol) {
+    secApexCol = COLLAPSED_FACE_VERTICES[0];
+  }
+
+  // Compute active face polygon coordinates
+  let activeFacePoints = [];
+  let curApexX = secApexNorm.x;
+  let curApexY = secApexNorm.y;
+
+  for (let p of faceVertexPairs) {
+    let curX, curY;
+    if (animState === 'IDLE') {
+      curX = p.norm.x;
+      curY = p.norm.y;
+    } else if (animState === 'DROPPING') {
+      curX = p.norm.x + (p.col.x - p.norm.x) * dropProgress;
+      curY = p.norm.y + (p.col.y - p.norm.y) * dropProgress;
+    } else if (animState === 'HOLD_PILE') {
+      curX = p.col.x;
+      curY = p.col.y;
+    } else if (animState === 'REBUILDING') {
+      curX = p.col.x + (p.norm.x - p.col.x) * rebuildProgress;
+      curY = p.col.y + (p.norm.y - p.col.y) * rebuildProgress;
+    }
+
+    if (p.isSec) {
+      curApexX = curX;
+      curApexY = curY;
+    }
+    activeFacePoints.push({ x: curX, y: curY });
+  }
+
+  // --- Separated Hands & Pivot Positions (hands detach when collapsing & reunite on rebuild, 100% inside blue face) ---
+  let colHourPivot = { x: 325, y: 665 };
+  let colMinPivot = { x: 445, y: 725 };
+  let colSecPivot = { x: 382, y: 698 };
+  let fallenHourAngle = radians(58) - HALF_PI;
+  let fallenMinAngle = radians(262) - HALF_PI;
+
+  let curHourX = CENTER_X;
+  let curHourY = CENTER_Y;
+  let curMinX = CENTER_X;
+  let curMinY = CENTER_Y;
+  let curSecBaseX = CENTER_X;
+  let curSecBaseY = CENTER_Y;
+  let curHourAngle = hourAngle;
+  let curMinAngle = minAngle;
+
+  if (animState === 'DROPPING') {
+    let rotP = Math.min(1, Math.pow(dropProgress, 0.72));
+    curHourX = CENTER_X + (colHourPivot.x - CENTER_X) * dropProgress;
+    curHourY = CENTER_Y + (colHourPivot.y - CENTER_Y) * dropProgress;
+    curMinX = CENTER_X + (colMinPivot.x - CENTER_X) * dropProgress;
+    curMinY = CENTER_Y + (colMinPivot.y - CENTER_Y) * dropProgress;
+    curSecBaseX = CENTER_X + (colSecPivot.x - CENTER_X) * dropProgress;
+    curSecBaseY = CENTER_Y + (colSecPivot.y - CENTER_Y) * dropProgress;
+    curHourAngle = hourAngle + angleDist(fallenHourAngle, hourAngle) * rotP;
+    curMinAngle = minAngle + angleDist(fallenMinAngle, minAngle) * rotP;
+  } else if (animState === 'HOLD_PILE') {
+    curHourX = colHourPivot.x;
+    curHourY = colHourPivot.y;
+    curMinX = colMinPivot.x;
+    curMinY = colMinPivot.y;
+    curSecBaseX = colSecPivot.x;
+    curSecBaseY = colSecPivot.y;
+    curHourAngle = fallenHourAngle;
+    curMinAngle = fallenMinAngle;
+  } else if (animState === 'REBUILDING') {
+    curHourX = colHourPivot.x + (CENTER_X - colHourPivot.x) * rebuildProgress;
+    curHourY = colHourPivot.y + (CENTER_Y - colHourPivot.y) * rebuildProgress;
+    curMinX = colMinPivot.x + (CENTER_X - colMinPivot.x) * rebuildProgress;
+    curMinY = colMinPivot.y + (CENTER_Y - colMinPivot.y) * rebuildProgress;
+    curSecBaseX = colSecPivot.x + (CENTER_X - colSecPivot.x) * rebuildProgress;
+    curSecBaseY = colSecPivot.y + (CENTER_Y - colSecPivot.y) * rebuildProgress;
+    curHourAngle = fallenHourAngle + angleDist(hourAngle, fallenHourAngle) * rebuildProgress;
+    curMinAngle = fallenMinAngle + angleDist(minAngle, fallenMinAngle) * rebuildProgress;
+  }
+
+  // Second hand terminates TIP_GAP (12px) before reaching the edge
+  let dx = curApexX - curSecBaseX;
+  let dy = curApexY - curSecBaseY;
+  let distToApex = Math.hypot(dx, dy);
+  let ratio = distToApex > TIP_GAP ? (distToApex - TIP_GAP) / distToApex : 0.88;
+  let curSecTipX = curSecBaseX + dx * ratio;
+  let curSecTipY = curSecBaseY + dy * ratio;
+
+  // Riso Drum Misregistration Offsets (steps at 4 FPS)
+  let faceOffX = risoState.regFaceX;
+  let faceOffY = risoState.regFaceY;
+  let redOffX = risoState.regRedX;
+  let redOffY = risoState.regRedY;
+  let blueOffX = risoState.regBlueX;
+  let blueOffY = risoState.regBlueY;
+
+  // --- 0. Riso Misregistered Underprint Drum (Warm Yellow/Cream & Aqua Rim Offset) ---
+  push();
+  noStroke();
+  fill(255, 238, 175, 105); // Warm Riso yellow-cream misregistration rim
+  beginShape();
+  for (let pt of activeFacePoints) {
+    vertex(pt.x + faceOffX, pt.y + faceOffY);
+  }
+  endShape(CLOSE);
+
+  fill(140, 235, 245, 92); // Secondary Riso aqua drum edge shift
+  beginShape();
+  for (let pt of activeFacePoints) {
+    vertex(pt.x - faceOffX * 0.65, pt.y - faceOffY * 0.65);
+  }
+  endShape(CLOSE);
+  pop();
+
+  // --- 1. Draw Main Cyan Clock Face Polygon ---
+  fill(214, 252, 252); // Pastel cyan
+  noStroke();
+  beginShape();
+  for (let pt of activeFacePoints) {
+    vertex(pt.x, pt.y);
+  }
+  endShape(CLOSE);
+
+  // --- 2. Strict Polygon Clipping (hands & text NEVER escape the blue face) ---
+  drawingContext.save();
+  drawingContext.beginPath();
+  for (let i = 0; i < activeFacePoints.length; i++) {
+    let pt = activeFacePoints[i];
+    if (i === 0) drawingContext.moveTo(pt.x, pt.y);
+    else drawingContext.lineTo(pt.x, pt.y);
+  }
+  drawingContext.closePath();
+  drawingContext.clip();
+
+  // --- Draw Dial Monospace Words with Riso Color Separation ---
+  let labels = currentPhase === 'AM' ? CIRCADIAN_AM : CIRCADIAN_PM;
+  noStroke();
+  textSize(28);
+
+  for (let i = 0; i < 12; i++) {
+    let hAngle = baseAngles[i];
+    let dSec = Math.abs(angleDist(secAngle, hAngle));
+    let mRadius = MARKER_RADIUS;
+    if (dSec < 0.28) {
+      mRadius += pushAmt * 0.12;
+    }
+
+    let normX = CENTER_X + Math.cos(hAngle) * mRadius;
+    let normY = CENTER_Y + Math.sin(hAngle) * mRadius;
+    let pile = COLLAPSED_WORD_POSITIONS[i];
+
+    let wX = normX;
+    let wY = normY;
+    let wRot = 0;
+
+    if (animState === 'DROPPING') {
+      wX = normX + (pile.x - normX) * dropProgress;
+      wY = normY + (pile.y - normY) * dropProgress;
+      wRot = pile.rot * dropProgress;
+    } else if (animState === 'HOLD_PILE') {
+      wX = pile.x;
+      wY = pile.y;
+      wRot = pile.rot;
+    } else if (animState === 'REBUILDING') {
+      wX = pile.x + (normX - pile.x) * rebuildProgress;
+      wY = pile.y + (normY - pile.y) * rebuildProgress;
+      wRot = pile.rot * (1.0 - rebuildProgress);
+    }
+
+    push();
+    translate(wX, wY);
+    rotate(wRot);
+
+    // Riso Fluorescent Red/Pink misregistered plate underprint
+    fill(242, 44, 61, 60);
+    text(labels[i], redOffX, redOffY);
+
+    // Riso Blue/Teal misregistered plate underprint
+    fill(0, 130, 195, 50);
+    text(labels[i], blueOffX, blueOffY);
+
+    // Main Riso Soy Black Ink
+    fill(22, 18, 26);
+    text(labels[i], 0, 0);
+    pop();
+  }
+
+  // --- Draw Hour Arrow Hand with Riso Registration Ghost ---
+  drawRisoHand(curHourX, curHourY, curHourAngle + HALF_PI, 155, 129, 134, redOffX, redOffY, blueOffX, blueOffY);
+
+  // --- Draw Minute Arrow Hand with Riso Registration Ghost ---
+  drawRisoHand(curMinX, curMinY, curMinAngle + HALF_PI, 225, 199, 204, redOffX, redOffY, blueOffX, blueOffY);
+
+  // --- Draw Long Red Second Hand (with Riso Misregistered Yellow Echo + Guaranteed #f22c3d Red) ---
+  push();
+  drawingContext.strokeStyle = 'rgba(255, 190, 40, 0.28)';
+  drawingContext.lineWidth = 2.0;
+  drawingContext.lineCap = 'round';
+  drawingContext.beginPath();
+  drawingContext.moveTo(curSecBaseX + redOffX * 0.8, curSecBaseY + redOffY * 0.8);
+  drawingContext.lineTo(curSecTipX + redOffX * 1.1, curSecTipY + redOffY * 1.1);
+  drawingContext.stroke();
+
+  // Main Fluorescent Red Second Hand (#f22c3d)
+  stroke(242, 44, 61);
+  strokeWeight(2.2);
+  strokeCap(ROUND);
+  drawingContext.strokeStyle = '#f22c3d';
+  drawingContext.lineWidth = 2.2;
+  drawingContext.lineCap = 'round';
+  line(curSecBaseX, curSecBaseY, curSecTipX, curSecTipY);
+  pop();
+
+  // Restore clipping context
+  drawingContext.restore();
+
+  // --- 3. Fullscreen Pink/Blue Risograph Grain & Micro White Print Voids (4 FPS) ---
+  applyRisoGrainOverlay();
+}
+
+/**
+ * Helper to trace a single continuous hand path with a rounded semicircular base end
+ */
+function traceRoundedHandPath(ctx, tipLen, wingY, notchY) {
+  ctx.beginPath();
+  ctx.moveTo(0, -tipLen);
+  ctx.lineTo(14, -wingY);
+  ctx.lineTo(3, -notchY);
+  ctx.lineTo(3, 0);
+  ctx.arc(0, 0, 3, 0, Math.PI, false);
+  ctx.lineTo(-3, -notchY);
+  ctx.lineTo(-14, -wingY);
+  ctx.closePath();
+}
+
+/**
+ * Draws an arrow hand with Riso multi-drum registration plates and rounded ends (no center dot)
+ */
+function drawRisoHand(px, py, angleRad, tipLen, wingY, notchY, rOx, rOy, bOx, bOy) {
+  const ctx = drawingContext;
+
+  // 1. Riso Red misregistered plate
+  push();
+  translate(px + rOx, py + rOy);
+  rotate(angleRad);
+  ctx.fillStyle = 'rgba(242, 44, 61, 0.24)';
+  traceRoundedHandPath(ctx, tipLen, wingY, notchY);
+  ctx.fill();
+  pop();
+
+  // 2. Riso Blue misregistered plate
+  push();
+  translate(px + bOx, py + bOy);
+  rotate(angleRad);
+  ctx.fillStyle = 'rgba(0, 130, 195, 0.20)';
+  traceRoundedHandPath(ctx, tipLen, wingY, notchY);
+  ctx.fill();
+  pop();
+
+  // 3. Main Soy Black Ink Hand (with rounded ends & joins)
+  push();
+  translate(px, py);
+  rotate(angleRad);
+  ctx.fillStyle = '#16121a';
+  ctx.strokeStyle = '#16121a';
+  ctx.lineWidth = 1.6;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  traceRoundedHandPath(ctx, tipLen, wingY, notchY);
+  ctx.fill();
+  ctx.stroke();
+  pop();
+}
+
+/**
+ * Composites the Pink/Blue Risograph grain & micro natural white unprinted spots at 4 FPS
+ */
+function applyRisoGrainOverlay() {
+  if (!risoGrainCanvas || !grainOverlayCtx || !grainOverlayCanvas) return;
+
+  const w = grainOverlayCanvas.width;
+  const h = grainOverlayCanvas.height;
+  if (!w || !h) return;
+
+  grainOverlayCtx.clearRect(0, 0, w, h);
+
+  // 1. Pink & Blue stochastic Riso ink grain (+25% more obvious)
+  const gPat = grainOverlayCtx.createPattern(risoGrainCanvas, 'repeat');
+  if (gPat) {
+    grainOverlayCtx.save();
+    grainOverlayCtx.globalAlpha = 0.45;
+    grainOverlayCtx.translate(risoState.seedX, risoState.seedY);
+    grainOverlayCtx.fillStyle = gPat;
+    grainOverlayCtx.fillRect(-risoState.seedX, -risoState.seedY, w, h);
+    grainOverlayCtx.restore();
+  }
+
+  // 2. Micro natural random white spots missed in printing process (2x count)
+  grainOverlayCtx.save();
+  for (let i = 0; i < risoState.whiteSpots.length; i++) {
+    const sp = risoState.whiteSpots[i];
+    const sx = sp.nx * w;
+    const sy = sp.ny * h;
+    grainOverlayCtx.fillStyle = `rgba(255, 253, 250, ${sp.alpha.toFixed(2)})`;
+    grainOverlayCtx.beginPath();
+    grainOverlayCtx.ellipse(sx, sy, sp.rx, sp.ry, sp.rot, 0, TWO_PI);
+    grainOverlayCtx.fill();
+
+    if (sp.hasSatellite) {
+      grainOverlayCtx.beginPath();
+      grainOverlayCtx.arc(sx + sp.satDx, sy + sp.satDy, sp.rx * 0.55, 0, TWO_PI);
+      grainOverlayCtx.fill();
+    }
+  }
+  grainOverlayCtx.restore();
+}
+
+// --- Procedural Web Audio Sound FX (Natural Mechanical Clock Tick-Tock & Crunchy Riso Collapse) ---
+const SoundFX = (() => {
+  let ctx = null;
+  let muted = false;
+  let crunchBuffer = null;
+
+  function ensureCtx() {
+    if (muted) return null;
+    if (!ctx) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return null;
+      ctx = new AudioCtx();
+    }
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+    if (!crunchBuffer && ctx) {
+      const sr = ctx.sampleRate;
+      crunchBuffer = ctx.createBuffer(1, Math.floor(sr * 1.5), sr);
+      const data = crunchBuffer.getChannelData(0);
+      let hold = 0;
+      for (let i = 0; i < data.length; i++) {
+        const r = Math.random();
+        if (r < 0.045) {
+          hold = (Math.random() * 2 - 1) * (0.65 + Math.random() * 0.35);
+        } else {
+          hold *= 0.82;
+        }
+        const fine = (Math.random() * 2 - 1) * 0.18;
+        data[i] = Math.max(-1, Math.min(1, hold + fine));
+      }
+    }
+    return ctx;
+  }
+
+  ['pointerdown', 'mousedown', 'keydown', 'touchstart'].forEach((evt) => {
+    window.addEventListener(evt, () => ensureCtx(), { passive: true });
+  });
+
+  function playClockTick(sec) {
+    const ac = ensureCtx();
+    if (!ac || ac.state !== 'running') return;
+
+    const now = ac.currentTime;
+    const isTock = (sec % 2 === 1);
+
+    // 1. Primary escapement pin impulse
+    const clickDur = 0.024;
+    const clickBuf = ac.createBuffer(1, Math.floor(ac.sampleRate * clickDur), ac.sampleRate);
+    const cData = clickBuf.getChannelData(0);
+    for (let i = 0; i < cData.length; i++) {
+      const env = Math.pow(1 - i / cData.length, 3.2);
+      cData[i] = (Math.random() * 2 - 1) * env;
+    }
+    const clickSrc = ac.createBufferSource();
+    clickSrc.buffer = clickBuf;
+
+    const bp = ac.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(isTock ? 1720 : 2180, now);
+    bp.Q.setValueAtTime(4.0, now);
+
+    const clickGain = ac.createGain();
+    clickGain.gain.setValueAtTime(0.26, now);
+    clickGain.gain.exponentialRampToValueAtTime(0.001, now + clickDur);
+
+    clickSrc.connect(bp);
+    bp.connect(clickGain);
+    clickGain.connect(ac.destination);
+    clickSrc.start(now);
+
+    // 2. Warm wooden clock-case resonance body
+    const bodyOsc = ac.createOscillator();
+    bodyOsc.type = 'triangle';
+    bodyOsc.frequency.setValueAtTime(isTock ? 230 : 275, now);
+    bodyOsc.frequency.exponentialRampToValueAtTime(isTock ? 82 : 98, now + 0.026);
+
+    const bodyGain = ac.createGain();
+    bodyGain.gain.setValueAtTime(0.09, now);
+    bodyGain.gain.exponentialRampToValueAtTime(0.001, now + 0.028);
+
+    bodyOsc.connect(bodyGain);
+    bodyGain.connect(ac.destination);
+    bodyOsc.start(now);
+    bodyOsc.stop(now + 0.03);
+
+    // 3. Subtle pallet-fork lock micro-click (+38ms later)
+    const subOffset = 0.038;
+    const subSrc = ac.createBufferSource();
+    subSrc.buffer = clickBuf;
+
+    const subBp = ac.createBiquadFilter();
+    subBp.type = 'bandpass';
+    subBp.frequency.setValueAtTime(isTock ? 2900 : 3400, now + subOffset);
+    subBp.Q.setValueAtTime(5.0, now + subOffset);
+
+    const subGain = ac.createGain();
+    subGain.gain.setValueAtTime(0.065, now + subOffset);
+    subGain.gain.exponentialRampToValueAtTime(0.001, now + subOffset + 0.014);
+
+    subSrc.connect(subBp);
+    subBp.connect(subGain);
+    subGain.connect(ac.destination);
+    subSrc.start(now + subOffset);
+  }
+
+  function triggerCrunchGrain(ac, startTime, duration, freqCenter, intensity, addClatter) {
+    if (!crunchBuffer) return;
+    const src = ac.createBufferSource();
+    src.buffer = crunchBuffer;
+    src.playbackRate.setValueAtTime(0.85 + Math.random() * 0.45, startTime);
+
+    const hp = ac.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.setValueAtTime(480, startTime);
+
+    const bp = ac.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(freqCenter, startTime);
+    bp.frequency.exponentialRampToValueAtTime(freqCenter * (0.72 + Math.random() * 0.5), startTime + duration);
+    bp.Q.setValueAtTime(1.6, startTime);
+
+    const shelf = ac.createBiquadFilter();
+    shelf.type = 'highshelf';
+    shelf.frequency.setValueAtTime(3600, startTime);
+    shelf.gain.setValueAtTime(7.5, startTime);
+
+    const gain = ac.createGain();
+    gain.gain.setValueAtTime(0.001, startTime);
+    gain.gain.linearRampToValueAtTime(intensity, startTime + 0.018);
+    gain.gain.setValueAtTime(intensity * 0.85, startTime + duration * 0.55);
+    gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+
+    src.connect(hp);
+    hp.connect(bp);
+    bp.connect(shelf);
+    shelf.connect(gain);
+    gain.connect(ac.destination);
+
+    const offset = Math.random() * 0.8;
+    src.start(startTime, offset, duration + 0.02);
+
+    if (addClatter) {
+      const knockOsc = ac.createOscillator();
+      knockOsc.type = 'triangle';
+      const kFreq = 420 + Math.random() * 340;
+      knockOsc.frequency.setValueAtTime(kFreq, startTime + 0.015);
+      knockOsc.frequency.exponentialRampToValueAtTime(kFreq * 0.38, startTime + 0.048);
+
+      const knockGain = ac.createGain();
+      knockGain.gain.setValueAtTime(intensity * 0.28, startTime + 0.015);
+      knockGain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.052);
+
+      knockOsc.connect(knockGain);
+      knockGain.connect(ac.destination);
+      knockOsc.start(startTime + 0.015);
+      knockOsc.stop(startTime + 0.055);
+    }
+  }
+
+  function playCollapseCrunch() {
+    const ac = ensureCtx();
+    if (!ac) return;
+    const now = ac.currentTime;
+
+    const steps = [
+      { t: 0.00, dur: 0.21, freq: 2100, amp: 0.38, clatter: true },
+      { t: 0.24, dur: 0.22, freq: 1750, amp: 0.42, clatter: true },
+      { t: 0.49, dur: 0.20, freq: 1480, amp: 0.36, clatter: true },
+      { t: 0.74, dur: 0.19, freq: 1920, amp: 0.30, clatter: true },
+      { t: 0.99, dur: 0.23, freq: 1320, amp: 0.34, clatter: false }
+    ];
+    steps.forEach((s) => {
+      triggerCrunchGrain(ac, now + s.t, s.dur, s.freq, s.amp, s.clatter);
+    });
+  }
+
+  function playRebuildCrunch() {
+    const ac = ensureCtx();
+    if (!ac) return;
+    const now = ac.currentTime;
+
+    const steps = [
+      { t: 0.00, dur: 0.18, freq: 1450, amp: 0.25, clatter: false },
+      { t: 0.25, dur: 0.17, freq: 1850, amp: 0.26, clatter: true },
+      { t: 0.50, dur: 0.16, freq: 2300, amp: 0.24, clatter: true },
+      { t: 0.75, dur: 0.15, freq: 2750, amp: 0.20, clatter: false }
+    ];
+    steps.forEach((s) => {
+      triggerCrunchGrain(ac, now + s.t, s.dur, s.freq, s.amp, s.clatter);
+    });
+  }
+
+  function toggleMute() {
+    muted = !muted;
+  }
+
+  return { playClockTick, playCollapseCrunch, playRebuildCrunch, toggleMute };
+})();
+
+function triggerCollapse() {
+  if (animState === 'IDLE') {
+    animState = 'DROPPING';
+    animStartTime = (Math.floor(millis() / FRAME_INTERVAL_MS) - 1) * FRAME_INTERVAL_MS;
+    forceRenderFrame = true;
+    SoundFX.playCollapseCrunch();
+  }
+}
+
+// Click anywhere on canvas (outside UI controls) to trigger collapse & rebuild
+function mousePressed(e) {
+  if (e && e.target && (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || (e.target.closest && e.target.closest('#p5-ui-panel')))) {
+    return;
+  }
+  triggerCollapse();
+}
+
+// Keyboard shortcuts: 'H' to hide/show all UI, 'C' to collapse, 'T' to toggle AM/PM, 'M' to mute/unmute
+function keyPressed() {
+  if (key === 'h' || key === 'H') {
+    if (uiPanel) uiPanel.elt.classList.toggle('collapsed');
+    if (digitalBadge) digitalBadge.elt.classList.toggle('collapsed');
+    if (topBadge) topBadge.elt.classList.toggle('collapsed');
+  } else if (key === 'c' || key === 'C') {
+    triggerCollapse();
+  } else if (key === 't' || key === 'T') {
+    currentPhase = currentPhase === 'AM' ? 'PM' : 'AM';
+    triggerCollapse();
+  } else if (key === 'm' || key === 'M') {
+    SoundFX.toggleMute();
+  }
+}
+
+function angleDist(a, b) {
+  let diff = (a - b) % TWO_PI;
+  if (diff < -PI) diff += TWO_PI;
+  if (diff > PI) diff -= TWO_PI;
+  return diff;
+}
